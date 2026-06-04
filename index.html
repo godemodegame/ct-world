@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ct world</title>
+  </head>
+  <body>
+    <aside id="socialPanel" aria-label="Timeline">
+      <header class="timeline-header">
+        <div class="timeline-title">Home</div>
+        <div class="timeline-subtitle">For you</div>
+        <button id="socialToggle" class="timeline-toggle" type="button" aria-label="Collapse timeline" aria-expanded="true">Hide</button>
+      </header>
+      <div id="feedList" class="feed-list"></div>
+    </aside>
+    <div id="dialogPanel" class="dialog-panel" hidden>
+      <div class="dialog-name" id="dialogName"></div>
+      <div class="dialog-text" id="dialogText"></div>
+      <div class="dialog-actions">
+        <button id="dialogSecondary" class="secondary-action" type="button" hidden>Not now</button>
+        <button id="dialogClose" type="button">OK</button>
+      </div>
+    </div>
+    <div id="app"></div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
