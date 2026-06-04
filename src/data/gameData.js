@@ -17,7 +17,7 @@ export const NPCS = [
 export const WALE_MOCA = {
   id: 'wale_moca',
   displayName: 'wale.moca 🐳',
-  handle: '@wleswoosh',
+  handle: '@waleswoosh',
   verifiedIcon: '/assets/checkmark.svg.png',
   model: '/assets/wale.moca/waleswoosh.fbx',
   texture: '/assets/wale.moca/waleswoosh_texture.jpg',

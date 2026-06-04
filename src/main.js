@@ -8,11 +8,30 @@ const MAP_TILE_WIDTH = 48;
 const MAP_VISIBLE_TILES = 12;
 const HERO_SPEED = 9;
 const INTERACTION_DISTANCE = 2.6;
+const HERO_COLLISION_RADIUS = 0.55;
 const HERO_ASSETS = ['/assets/hero.fbx', '/assets/hero.glb', '/assets/hero.gltf'];
 const HERO_TARGET_HEIGHT = 2.4;
 const NPC_TARGET_HEIGHT = 2.1;
 const MODEL_FACE_DOWN_OFFSET = Math.PI / 2;
 const MAP_ASSET = '/assets/map.png';
+const MCDONALDS_BUILDING_ASSET = '/assets/mcdonalds/mcdonalds_building.fbx';
+const MCDONALDS_FLOOR_ASSET = '/assets/mcdonalds/floor.png';
+const MCDONALDS_WALL_ASSET = '/assets/mcdonalds/wall.png';
+const MCDONALDS_CASHIER_ASSET = '/assets/mcdonalds/cashier.fbx';
+const MCDONALDS_CASHIER_TEXTURE = '/assets/mcdonalds/cashier_texture.jpg';
+const MCDONALDS_BUILDING_TARGET_HEIGHT = 3.4;
+const CASHIER_COUNTER_TARGET_HEIGHT = 2;
+const CASHIER_DIALOG_NAME = 'waleswoosh';
+const WALK_COLLIDERS = {
+  mcdonaldsInterior: [
+    { minX: -4.6, maxX: 4.6, minZ: -4.15, maxZ: -2.35 },
+    { minX: -7.4, maxX: -4.55, minZ: -5.45, maxZ: -4.05 },
+    { minX: -7.9, maxX: -5.15, minZ: -0.35, maxZ: 1.65 },
+    { minX: -7.9, maxX: -5.15, minZ: 2.3, maxZ: 4.55 },
+    { minX: 5.15, maxX: 7.9, minZ: 0.35, maxZ: 2.5 },
+    { minX: 5.15, maxX: 7.9, minZ: 3.1, maxZ: 4.85 },
+  ],
+};
 const QUEST_STORAGE_KEY = 'ct-world.friesForJessy';
 const LEGACY_QUEST_STORAGE_KEY = 'kris-rpg.friesForJessy';
 
@@ -126,6 +145,7 @@ function toggleSocialPanel() {
   socialToggle.setAttribute('aria-expanded', String(!isCollapsed));
   socialToggle.setAttribute('aria-label', isCollapsed ? 'Expand timeline' : 'Collapse timeline');
   socialToggle.textContent = isCollapsed ? 'Show' : 'Hide';
+  if (!isCollapsed) scrollFeedToBottom();
 }
 
 function loadQuestState() {
@@ -294,45 +314,11 @@ function createLocations() {
     group.position.set(location.position.x, 0, location.position.z);
     group.userData.interactive = { kind: 'location', id: location.id, world: 'outside' };
 
-    const base = new THREE.Mesh(
-      new THREE.BoxGeometry(3.6, 1.55, 2.8),
-      new THREE.MeshStandardMaterial({ color: location.color, roughness: 0.66 })
-    );
-    base.position.y = 0.78;
-    base.castShadow = true;
-    base.receiveShadow = true;
-    group.add(base);
-
-    const roof = new THREE.Mesh(
-      new THREE.BoxGeometry(4.05, 0.38, 3.18),
-      new THREE.MeshStandardMaterial({ color: 0x2b1f1c, roughness: 0.7 })
-    );
-    roof.position.y = 1.73;
-    roof.castShadow = true;
-    group.add(roof);
-
-    const sign = new THREE.Mesh(
-      new THREE.BoxGeometry(2.4, 0.62, 0.12),
-      new THREE.MeshStandardMaterial({ color: location.accentColor, roughness: 0.5 })
-    );
-    sign.position.set(0, 1.22, 1.46);
-    sign.castShadow = true;
-    group.add(sign);
-
-    const counter = new THREE.Mesh(
-      new THREE.BoxGeometry(2.25, 0.62, 0.22),
-      new THREE.MeshStandardMaterial({ color: 0xf5f0dd, roughness: 0.74 })
-    );
-    counter.position.set(0, 0.47, 1.52);
-    counter.castShadow = true;
-    group.add(counter);
-
-    const label = createLabelSprite(location.displayName, {
-      background: 'rgba(217, 40, 30, 0.88)',
-      color: '#fff3c4',
-    });
-    label.position.set(0, 2.42, 0);
-    group.add(label);
+    const fallbackBuilding = createFallbackLocationBuilding(location);
+    group.add(fallbackBuilding);
+    if (location.id === 'mcdonalds') {
+      loadMcDonaldsBuildingModel(group, fallbackBuilding);
+    }
 
     outsideGroup.add(group);
     interactiveRoots.push(group);
@@ -342,10 +328,80 @@ function createLocations() {
   return locationMap;
 }
 
+function createFallbackLocationBuilding(location) {
+  const group = new THREE.Group();
+  group.name = `${location.displayName} Fallback Building`;
+
+  const base = new THREE.Mesh(
+    new THREE.BoxGeometry(3.6, 1.55, 2.8),
+    new THREE.MeshStandardMaterial({ color: location.color, roughness: 0.66 })
+  );
+  base.position.y = 0.78;
+  base.castShadow = true;
+  base.receiveShadow = true;
+  group.add(base);
+
+  const roof = new THREE.Mesh(
+    new THREE.BoxGeometry(4.05, 0.38, 3.18),
+    new THREE.MeshStandardMaterial({ color: 0x2b1f1c, roughness: 0.7 })
+  );
+  roof.position.y = 1.73;
+  roof.castShadow = true;
+  group.add(roof);
+
+  const sign = new THREE.Mesh(
+    new THREE.BoxGeometry(2.4, 0.62, 0.12),
+    new THREE.MeshStandardMaterial({ color: location.accentColor, roughness: 0.5 })
+  );
+  sign.position.set(0, 1.22, 1.46);
+  sign.castShadow = true;
+  group.add(sign);
+
+  const counter = new THREE.Mesh(
+    new THREE.BoxGeometry(2.25, 0.62, 0.22),
+    new THREE.MeshStandardMaterial({ color: 0xf5f0dd, roughness: 0.74 })
+  );
+  counter.position.set(0, 0.47, 1.52);
+  counter.castShadow = true;
+  group.add(counter);
+
+  return group;
+}
+
+function loadMcDonaldsBuildingModel(group, fallbackBuilding) {
+  const loader = createHeroLoader(MCDONALDS_BUILDING_ASSET);
+
+  loader.load(
+    MCDONALDS_BUILDING_ASSET,
+    (loaded) => {
+      const model = loaded.scene || loaded;
+      model.rotation.x = -Math.PI / 2;
+      prepareModel(model, MCDONALDS_BUILDING_TARGET_HEIGHT);
+      group.remove(fallbackBuilding);
+      group.add(model);
+    },
+    undefined,
+    () => {
+      setStatus(`Could not load ${MCDONALDS_BUILDING_ASSET.split('/').pop()}`);
+    }
+  );
+}
+
 function createMcDonaldsInterior() {
+  const floorMaterial = createRepeatingTextureMaterial(MCDONALDS_FLOOR_ASSET, {
+    color: 0xeadfc9,
+    repeat: [5, 4],
+    roughness: 0.86,
+  });
+  const wallMaterial = createRepeatingTextureMaterial(MCDONALDS_WALL_ASSET, {
+    color: 0xb82018,
+    repeat: [6, 1],
+    roughness: 0.72,
+  });
+
   const floor = new THREE.Mesh(
     new THREE.PlaneGeometry(18, 14, 1, 1),
-    new THREE.MeshStandardMaterial({ color: 0xeadfc9, roughness: 0.86 })
+    floorMaterial
   );
   floor.name = "McDonald's Interior Floor";
   floor.rotation.x = -Math.PI / 2;
@@ -354,27 +410,36 @@ function createMcDonaldsInterior() {
 
   const backWall = new THREE.Mesh(
     new THREE.BoxGeometry(18, 3, 0.32),
-    new THREE.MeshStandardMaterial({ color: 0xb82018, roughness: 0.72 })
+    wallMaterial
   );
   backWall.position.set(0, 1.5, -6.8);
   backWall.receiveShadow = true;
   interiorGroup.add(backWall);
 
-  const counter = new THREE.Mesh(
-    new THREE.BoxGeometry(9, 1.1, 1.1),
-    new THREE.MeshStandardMaterial({ color: 0x2d2420, roughness: 0.68 })
+  const leftWall = new THREE.Mesh(
+    new THREE.BoxGeometry(0.32, 3, 14),
+    wallMaterial
   );
-  counter.position.set(0, 0.55, -3.2);
-  counter.castShadow = true;
-  counter.receiveShadow = true;
-  interiorGroup.add(counter);
+  leftWall.position.set(-9, 1.5, 0);
+  leftWall.receiveShadow = true;
+  interiorGroup.add(leftWall);
 
-  const sign = createLabelSprite("McDonald's", {
-    background: 'rgba(217, 40, 30, 0.92)',
-    color: '#fff3c4',
-  });
-  sign.position.set(0, 3.35, -6.56);
-  interiorGroup.add(sign);
+  const rightWall = new THREE.Mesh(
+    new THREE.BoxGeometry(0.32, 3, 14),
+    wallMaterial
+  );
+  rightWall.position.set(9, 1.5, 0);
+  rightWall.receiveShadow = true;
+  interiorGroup.add(rightWall);
+
+  const brandedInterior = createMcDonaldsInteriorDecor();
+  interiorGroup.add(brandedInterior);
+
+  const counter = createCashierCounter();
+  counter.position.set(0, 0, -3.2);
+  counter.userData.interactive = { kind: 'cashier', id: 'mcdonalds_cashier_counter', world: 'mcdonaldsInterior' };
+  interiorGroup.add(counter);
+  interactiveRoots.push(counter);
 
   const cashier = createCashier();
   cashier.position.set(0, 0, -4.15);
@@ -389,6 +454,264 @@ function createMcDonaldsInterior() {
   interactiveRoots.push(exit);
 
   return { floor, cashier, exit };
+}
+
+function createMcDonaldsInteriorDecor() {
+  const group = new THREE.Group();
+  group.name = "McDonald's Interior Decor";
+
+  const redMaterial = new THREE.MeshStandardMaterial({ color: 0xd9281e, roughness: 0.52 });
+  const yellowMaterial = new THREE.MeshStandardMaterial({ color: 0xffc72c, roughness: 0.48 });
+  const darkMaterial = new THREE.MeshStandardMaterial({ color: 0x1b1613, roughness: 0.68 });
+  const creamMaterial = new THREE.MeshStandardMaterial({ color: 0xf4e8d5, roughness: 0.7 });
+  const metalMaterial = new THREE.MeshStandardMaterial({ color: 0xd9d7d1, roughness: 0.42, metalness: 0.18 });
+
+  group.add(createWallStripe(0, 2.55, -6.6, 17.4, 0.22, 0.12, yellowMaterial));
+  group.add(createWallStripe(-8.82, 2.38, 0, 0.12, 0.18, 13.2, yellowMaterial));
+  group.add(createWallStripe(8.82, 2.38, 0, 0.12, 0.18, 13.2, yellowMaterial));
+
+  const menuBoard = createMenuBoards();
+  menuBoard.position.set(0, 2.24, -6.36);
+  group.add(menuBoard);
+
+  [-6.45, -5.25].forEach((x, index) => {
+    const kiosk = createOrderKiosk(index + 1);
+    kiosk.position.set(x, 0, -4.85);
+    kiosk.rotation.y = -0.14;
+    group.add(kiosk);
+  });
+
+  [
+    { x: -6.55, z: 0.7, rotation: 0.1 },
+    { x: -6.55, z: 3.35, rotation: -0.08 },
+    { x: 6.55, z: 1.45, rotation: -0.12 },
+    { x: 6.55, z: 3.95, rotation: 0.1 },
+  ].forEach((placement) => {
+    const tableSet = createDiningSet({ redMaterial, yellowMaterial, darkMaterial, creamMaterial, metalMaterial });
+    tableSet.position.set(placement.x, 0, placement.z);
+    tableSet.rotation.y = placement.rotation;
+    group.add(tableSet);
+  });
+
+  [
+    { x: -8.72, z: 1.85, width: 0.18, depth: 2.2 },
+    { x: 8.72, z: 2.45, width: 0.18, depth: 2.5 },
+  ].forEach((placement) => {
+    const booth = createBooth(placement.width, placement.depth, redMaterial, darkMaterial);
+    booth.position.set(placement.x, 0, placement.z);
+    group.add(booth);
+  });
+
+  [
+    { x: -2.2, z: -0.9 },
+    { x: 0, z: -0.55 },
+    { x: 2.2, z: -0.9 },
+    { x: -6.3, z: 2.05 },
+    { x: 6.35, z: 2.85 },
+  ].forEach(({ x, z }) => {
+    const mat = createFloorMat();
+    mat.position.set(x, 0.055, z);
+    group.add(mat);
+  });
+
+  return group;
+}
+
+function createWallStripe(x, y, z, width, height, depth, material) {
+  const stripe = new THREE.Mesh(new THREE.BoxGeometry(width, height, depth), material);
+  stripe.position.set(x, y, z);
+  stripe.castShadow = true;
+  return stripe;
+}
+
+function createMenuBoards() {
+  const group = new THREE.Group();
+  group.name = 'Menu Boards';
+
+  [
+    { x: -3.05, title: 'BURGERS', rows: ['Big Mac', 'McChicken', 'Cheeseburger'], accent: '#d9281e' },
+    { x: 0, title: 'FRIES', rows: ['Small', 'Medium', 'Large'], accent: '#ffc72c' },
+    { x: 3.05, title: 'DRINKS', rows: ['Cola', 'Sprite', 'Coffee'], accent: '#1d9bf0' },
+  ].forEach((board) => {
+    const mesh = createMenuBoard(board.title, board.rows, board.accent);
+    mesh.position.set(board.x, 0, 0);
+    group.add(mesh);
+  });
+
+  return group;
+}
+
+function createMenuBoard(title, rows, accent) {
+  const canvas = document.createElement('canvas');
+  canvas.width = 512;
+  canvas.height = 288;
+  const ctx = canvas.getContext('2d');
+
+  ctx.fillStyle = '#17130f';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = accent;
+  ctx.fillRect(0, 0, canvas.width, 48);
+  ctx.fillStyle = '#fff6dc';
+  ctx.font = '900 34px Inter, Arial, sans-serif';
+  ctx.fillText(title, 24, 36);
+
+  rows.forEach((row, index) => {
+    const y = 92 + index * 56;
+    ctx.fillStyle = '#fff6dc';
+    ctx.font = '760 28px Inter, Arial, sans-serif';
+    ctx.fillText(row, 28, y);
+    ctx.fillStyle = '#ffc72c';
+    ctx.fillText(`$${index + 2}.99`, 368, y);
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.12)';
+    ctx.fillRect(28, y + 18, 456, 2);
+  });
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  const material = new THREE.MeshBasicMaterial({ map: texture });
+  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(2.65, 1.48), material);
+  mesh.name = `${title} Menu Board`;
+  return mesh;
+}
+
+function createOrderKiosk(index) {
+  const group = new THREE.Group();
+  group.name = `Self Order Kiosk ${index}`;
+  const bodyMaterial = new THREE.MeshStandardMaterial({ color: 0x26211d, roughness: 0.58 });
+  const screenMaterial = createScreenMaterial('ORDER', ['Big Mac', 'Fries', 'Drink'], '#ffc72c');
+  const accentMaterial = new THREE.MeshStandardMaterial({ color: 0xffc72c, roughness: 0.48 });
+
+  const pedestal = new THREE.Mesh(new THREE.BoxGeometry(0.42, 1.1, 0.38), bodyMaterial);
+  pedestal.position.y = 0.55;
+  pedestal.castShadow = true;
+  pedestal.receiveShadow = true;
+  group.add(pedestal);
+
+  const screen = new THREE.Mesh(new THREE.BoxGeometry(0.72, 0.9, 0.08), screenMaterial);
+  screen.position.set(0, 1.42, 0.15);
+  screen.rotation.x = -0.08;
+  screen.castShadow = true;
+  group.add(screen);
+
+  const cap = new THREE.Mesh(new THREE.BoxGeometry(0.86, 0.12, 0.42), accentMaterial);
+  cap.position.set(0, 1.93, 0.1);
+  cap.castShadow = true;
+  group.add(cap);
+
+  return group;
+}
+
+function createScreenMaterial(title, rows, accent) {
+  const canvas = document.createElement('canvas');
+  canvas.width = 256;
+  canvas.height = 320;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#f8f1df';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = accent;
+  ctx.fillRect(0, 0, canvas.width, 56);
+  ctx.fillStyle = '#211407';
+  ctx.font = '900 31px Inter, Arial, sans-serif';
+  ctx.fillText(title, 24, 38);
+  rows.forEach((row, index) => {
+    const y = 102 + index * 58;
+    ctx.fillStyle = index === 1 ? '#d9281e' : '#27201a';
+    roundRect(ctx, 28, y - 30, 200, 42, 9);
+    ctx.fill();
+    ctx.fillStyle = '#fff6dc';
+    ctx.font = '760 23px Inter, Arial, sans-serif';
+    ctx.fillText(row, 48, y);
+  });
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  return new THREE.MeshBasicMaterial({ map: texture });
+}
+
+function createDiningSet(materials) {
+  const group = new THREE.Group();
+  group.name = 'Dining Set';
+  const tabletop = new THREE.Mesh(new THREE.CylinderGeometry(0.58, 0.58, 0.12, 32), materials.creamMaterial || materials.yellowMaterial);
+  tabletop.position.y = 0.72;
+  tabletop.castShadow = true;
+  tabletop.receiveShadow = true;
+  group.add(tabletop);
+
+  const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.1, 0.72, 16), materials.metalMaterial);
+  leg.position.y = 0.36;
+  leg.castShadow = true;
+  group.add(leg);
+
+  [
+    { x: 0, z: -0.95, rotation: 0 },
+    { x: 0, z: 0.95, rotation: Math.PI },
+    { x: -0.95, z: 0, rotation: Math.PI / 2 },
+    { x: 0.95, z: 0, rotation: -Math.PI / 2 },
+  ].forEach((placement, index) => {
+    const chair = createChair(index % 2 ? materials.redMaterial : materials.darkMaterial, materials.metalMaterial);
+    chair.position.set(placement.x, 0, placement.z);
+    chair.rotation.y = placement.rotation;
+    group.add(chair);
+  });
+
+  return group;
+}
+
+function createChair(seatMaterial, legMaterial) {
+  const group = new THREE.Group();
+  const seat = new THREE.Mesh(new THREE.BoxGeometry(0.48, 0.12, 0.46), seatMaterial);
+  seat.position.y = 0.45;
+  seat.castShadow = true;
+  group.add(seat);
+
+  const back = new THREE.Mesh(new THREE.BoxGeometry(0.52, 0.56, 0.12), seatMaterial);
+  back.position.set(0, 0.78, -0.28);
+  back.castShadow = true;
+  group.add(back);
+
+  [-0.17, 0.17].forEach((x) => {
+    [-0.15, 0.15].forEach((z) => {
+      const chairLeg = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.03, 0.45, 8), legMaterial);
+      chairLeg.position.set(x, 0.23, z);
+      chairLeg.castShadow = true;
+      group.add(chairLeg);
+    });
+  });
+
+  return group;
+}
+
+function createBooth(width, depth, seatMaterial, tableMaterial) {
+  const group = new THREE.Group();
+  group.name = 'Wall Booth';
+
+  const bench = new THREE.Mesh(new THREE.BoxGeometry(width, 0.58, depth), seatMaterial);
+  bench.position.y = 0.42;
+  bench.castShadow = true;
+  bench.receiveShadow = true;
+  group.add(bench);
+
+  const back = new THREE.Mesh(new THREE.BoxGeometry(width, 1.05, depth), seatMaterial);
+  back.position.set(0, 0.88, 0);
+  back.castShadow = true;
+  group.add(back);
+
+  const table = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.12, depth * 0.86), tableMaterial);
+  table.position.set(width < 0.2 ? (width > 0 ? -0.58 : 0.58) : 0, 0.74, 0);
+  table.castShadow = true;
+  table.receiveShadow = true;
+  group.add(table);
+
+  return group;
+}
+
+function createFloorMat() {
+  const mat = new THREE.Mesh(
+    new THREE.BoxGeometry(1.55, 0.035, 0.92),
+    new THREE.MeshStandardMaterial({ color: 0x32261f, roughness: 0.9 })
+  );
+  mat.receiveShadow = true;
+  return mat;
 }
 
 function createCashier() {
@@ -459,6 +782,73 @@ function loadCashierModel(group, ...fallbackParts) {
       setStatus(`Could not load ${WALE_MOCA.model.split('/').pop()}`);
     }
   );
+}
+
+function createCashierCounter() {
+  const group = new THREE.Group();
+  group.name = "McDonald's Cashier Counter";
+
+  const fallback = new THREE.Mesh(
+    new THREE.BoxGeometry(9, 1.1, 1.1),
+    new THREE.MeshStandardMaterial({ color: 0x2d2420, roughness: 0.68 })
+  );
+  fallback.position.y = 0.55;
+  fallback.castShadow = true;
+  fallback.receiveShadow = true;
+  group.add(fallback);
+
+  loadCashierCounterModel(group, fallback);
+
+  return group;
+}
+
+function loadCashierCounterModel(group, fallback) {
+  const loader = createHeroLoader(MCDONALDS_CASHIER_ASSET);
+  const texture = loadCharacterTexture(MCDONALDS_CASHIER_TEXTURE);
+
+  loader.load(
+    MCDONALDS_CASHIER_ASSET,
+    (loaded) => {
+      const model = loaded.scene || loaded;
+      prepareModel(model, CASHIER_COUNTER_TARGET_HEIGHT);
+      applyTextureToModel(model, texture);
+      model.rotation.y = Math.PI + MODEL_FACE_DOWN_OFFSET;
+      group.remove(fallback);
+      group.add(model);
+    },
+    undefined,
+    () => {
+      setStatus(`Could not load ${MCDONALDS_CASHIER_ASSET.split('/').pop()}`);
+    }
+  );
+}
+
+function createRepeatingTextureMaterial(asset, options) {
+  const material = new THREE.MeshStandardMaterial({
+    color: options.color,
+    roughness: options.roughness,
+    metalness: 0,
+  });
+  const [repeatX, repeatY] = options.repeat;
+
+  new THREE.TextureLoader().load(
+    asset,
+    (texture) => {
+      texture.colorSpace = THREE.SRGBColorSpace;
+      texture.anisotropy = renderer.capabilities.getMaxAnisotropy();
+      texture.wrapS = THREE.RepeatWrapping;
+      texture.wrapT = THREE.RepeatWrapping;
+      texture.repeat.set(repeatX, repeatY);
+      material.map = texture;
+      material.needsUpdate = true;
+    },
+    undefined,
+    () => {
+      setStatus(`Could not load ${asset.split('/').pop()}`);
+    }
+  );
+
+  return material;
 }
 
 function createExitMarker() {
@@ -911,11 +1301,71 @@ function getApproachPoint(root) {
 }
 
 function moveHeroTo(point) {
-  targetPosition.copy(point);
+  targetPosition.copy(constrainWalkPoint(point));
   targetPosition.y = 0;
   clickMarker.position.set(targetPosition.x, 0.05, targetPosition.z);
   clickMarker.visible = true;
   isMoving = true;
+}
+
+function constrainWalkPoint(point, previousPoint = hero?.position) {
+  const constrained = point.clone();
+  constrained.y = 0;
+  const colliders = WALK_COLLIDERS[gameState.world] || [];
+
+  colliders.forEach((collider) => {
+    const bounds = expandCollider(collider, HERO_COLLISION_RADIUS);
+    if (!isPointInCollider(constrained, bounds)) return;
+    pushPointOutOfCollider(constrained, bounds, previousPoint);
+  });
+
+  return constrained;
+}
+
+function expandCollider(collider, margin) {
+  return {
+    minX: collider.minX - margin,
+    maxX: collider.maxX + margin,
+    minZ: collider.minZ - margin,
+    maxZ: collider.maxZ + margin,
+  };
+}
+
+function isPointInCollider(point, collider) {
+  return point.x >= collider.minX
+    && point.x <= collider.maxX
+    && point.z >= collider.minZ
+    && point.z <= collider.maxZ;
+}
+
+function pushPointOutOfCollider(point, collider, previousPoint) {
+  if (previousPoint?.z >= collider.maxZ) {
+    point.z = collider.maxZ;
+    return;
+  }
+  if (previousPoint?.z <= collider.minZ) {
+    point.z = collider.minZ;
+    return;
+  }
+  if (previousPoint?.x <= collider.minX) {
+    point.x = collider.minX;
+    return;
+  }
+  if (previousPoint?.x >= collider.maxX) {
+    point.x = collider.maxX;
+    return;
+  }
+
+  const distances = [
+    { axis: 'x', value: collider.minX, distance: Math.abs(point.x - collider.minX) },
+    { axis: 'x', value: collider.maxX, distance: Math.abs(collider.maxX - point.x) },
+    { axis: 'z', value: collider.minZ, distance: Math.abs(point.z - collider.minZ) },
+    { axis: 'z', value: collider.maxZ, distance: Math.abs(collider.maxZ - point.z) },
+  ];
+  const nearest = distances.reduce((best, candidate) =>
+    candidate.distance < best.distance ? candidate : best
+  );
+  point[nearest.axis] = nearest.value;
 }
 
 function flatDistance(a, b) {
@@ -1014,7 +1464,7 @@ function interactWithLocation(locationId) {
 function interactWithCashier() {
   const quest = gameState.activeQuestId && QUESTS[gameState.activeQuestId];
   if (!quest || gameState.questStage === 'not_started') {
-    showDialog('Cashier', 'Welcome in. Fries are available, but you do not have an order to place yet.');
+    showDialog(CASHIER_DIALOG_NAME, 'Welcome in. Fries are available, but you do not have an order to place yet.');
     return;
   }
 
@@ -1023,7 +1473,7 @@ function interactWithCashier() {
     gameState.friesReadyAt = Date.now() + quest.waitMs;
     saveQuestState();
     addFeed({ authorName: "McDonald's", handle: '@mcdonalds', text: quest.posts.ordered });
-    showDialog('Cashier', "Got it. One fries order. It will take about five minutes, so come back later.");
+    showDialog(CASHIER_DIALOG_NAME, "Got it. One fries order. It will take about five minutes, so come back later.");
     setStatus('Order placed');
     updateQuestUI();
     updateQuestMarkers();
@@ -1032,7 +1482,7 @@ function interactWithCashier() {
 
   if (gameState.questStage === 'fries_ordered') {
     if (Date.now() < gameState.friesReadyAt) {
-      showDialog('Cashier', 'Still working on those fries. Check back a little later.');
+      showDialog(CASHIER_DIALOG_NAME, 'Still working on those fries. Check back a little later.');
       return;
     }
 
@@ -1040,7 +1490,7 @@ function interactWithCashier() {
     gameState.questStage = 'fries_collected';
     saveQuestState();
     addFeed({ authorName: "McDonald's", handle: '@mcdonalds', text: quest.posts.pickedUp });
-    showDialog('Cashier', 'Your fries are ready. Careful, the bag is hot.');
+    showDialog(CASHIER_DIALOG_NAME, 'Your fries are ready. Careful, the bag is hot.');
     setStatus('Fries picked up');
     updateQuestUI();
     updateQuestMarkers();
@@ -1048,11 +1498,11 @@ function interactWithCashier() {
   }
 
   if (gameState.questStage === 'fries_collected') {
-    showDialog('Cashier', 'You already picked up the fries. jessyfries is waiting.');
+    showDialog(CASHIER_DIALOG_NAME, 'You already picked up the fries. jessyfries is waiting.');
     return;
   }
 
-  showDialog('Cashier', 'Thanks for stopping by.');
+  showDialog(CASHIER_DIALOG_NAME, 'Thanks for stopping by.');
 }
 
 function acceptQuest(quest, npc) {
@@ -1224,6 +1674,17 @@ function renderFeed() {
       return item;
     })
   );
+  scrollFeedToBottom();
+}
+
+function scrollFeedToBottom() {
+  if (!feedList || socialPanel?.classList.contains('is-collapsed')) return;
+
+  const scroll = () => {
+    feedList.scrollTop = feedList.scrollHeight;
+  };
+  requestAnimationFrame(scroll);
+  window.setTimeout(scroll, 120);
 }
 
 function createFeedActionIcon(icon) {
@@ -1369,7 +1830,26 @@ function updateHero(delta) {
 
   const step = Math.min(distance, HERO_SPEED * delta);
   heroVelocity.copy(toTarget.normalize()).multiplyScalar(step);
-  hero.position.add(heroVelocity);
+  const nextPosition = hero.position.clone().add(heroVelocity);
+  const constrainedPosition = constrainWalkPoint(nextPosition, hero.position);
+  if (!constrainedPosition.equals(nextPosition)) {
+    hero.position.copy(constrainedPosition);
+    targetPosition.copy(constrainedPosition);
+    clickMarker.visible = false;
+    isMoving = false;
+    if (pendingInteraction && flatDistance(hero.position, pendingInteraction.position) <= INTERACTION_DISTANCE) {
+      const target = pendingInteraction;
+      pendingInteraction = null;
+      interact(target);
+    } else {
+      pendingInteraction = null;
+      setStatus('Blocked');
+    }
+    setAnimation(false);
+    return;
+  }
+
+  hero.position.copy(nextPosition);
   hero.rotation.y = Math.atan2(heroVelocity.x, heroVelocity.z);
   setAnimation(true);
 }
