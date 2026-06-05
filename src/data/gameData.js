@@ -40,6 +40,21 @@ export const NPCS = [
     behavior: 'begging',
   },
   {
+    id: 'safz',
+    displayName: 'SafZ',
+    handle: '@SafZ',
+    verifiedIcon: '/assets/checkmark.svg.png',
+    color: 0x2ec4b6,
+    position: { x: 0.95, z: 10.35 },
+    targetHeight: 2.25,
+    labelY: 2.42,
+    interactionRadius: 1.15,
+    modelRotationY: Math.PI * 2,
+    model: '/assets/SafZ/safz.fbx',
+    bio: 'You are forbidden from entering.',
+    behavior: 'guard',
+  },
+  {
     id: 'bigchog',
     displayName: 'BigChog',
     handle: '@bigchog',
@@ -82,6 +97,14 @@ export const LOCATIONS = [
     accentColor: 0xf2c66d,
     position: { x: -3.25, z: 7.75 },
     kind: 'cafe',
+  },
+  {
+    id: 'alpha_gems',
+    displayName: 'Alpha Gems',
+    color: 0x1f6feb,
+    accentColor: 0x78f1d3,
+    position: { x: 0.95, z: 7.55 },
+    kind: 'alphaGems',
   },
 ];
 

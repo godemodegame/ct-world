@@ -19,10 +19,16 @@ const MCDONALDS_FLOOR_ASSET = '/assets/mcdonalds/floor.png';
 const MCDONALDS_WALL_ASSET = '/assets/mcdonalds/wall.png';
 const MCDONALDS_CASHIER_ASSET = '/assets/mcdonalds/cashier.fbx';
 const MCDONALDS_CASHIER_TEXTURE = '/assets/mcdonalds/cashier_texture.jpg';
+const ALPHA_GEMS_BUILDING_ASSET = '/assets/alpha_gems/alpha_gems.fbx';
 const MCDONALDS_BUILDING_TARGET_HEIGHT = 3.4;
+const ALPHA_GEMS_BUILDING_TARGET_HEIGHT = 3.75;
 const CASHIER_COUNTER_TARGET_HEIGHT = 2.3;
 const CASHIER_DIALOG_NAME = 'waleswoosh';
 const WALK_COLLIDERS = {
+  outside: [
+    { minX: -1.15, maxX: 3.05, minZ: 6.05, maxZ: 9.05 },
+    { minX: -0.18, maxX: 2.08, minZ: 9.05, maxZ: 10.95 },
+  ],
   mcdonaldsInterior: [
     { minX: -4.6, maxX: 4.6, minZ: -4.15, maxZ: -2.35 },
     { minX: -7.4, maxX: -4.55, minZ: -5.45, maxZ: -4.05 },
@@ -223,6 +229,10 @@ function createNPCs() {
     group.name = npc.displayName;
     group.position.set(npc.position.x, 0, npc.position.z);
     group.userData.interactive = { kind: 'npc', id: npc.id, world };
+    if (Number.isFinite(npc.interactionRadius)) {
+      group.userData.screenInteractionRadius = npc.screenInteractionRadius ?? 86;
+      group.userData.screenInteractionY = getNPCLabelY(npc) * 0.72;
+    }
 
     const shadow = new THREE.Mesh(
       new THREE.CircleGeometry(0.72, 32),
@@ -231,6 +241,22 @@ function createNPCs() {
     shadow.rotation.x = -Math.PI / 2;
     shadow.position.y = 0.035;
     group.add(shadow);
+
+    if (Number.isFinite(npc.interactionRadius)) {
+      const hitHeight = Math.max(getNPCLabelY(npc) + 0.24, 2.4);
+      const hitArea = new THREE.Mesh(
+        new THREE.CylinderGeometry(npc.interactionRadius, npc.interactionRadius, hitHeight, 32),
+        new THREE.MeshBasicMaterial({
+          color: 0xffffff,
+          transparent: true,
+          opacity: 0.001,
+          depthWrite: false,
+          side: THREE.DoubleSide,
+        })
+      );
+      hitArea.position.y = hitHeight / 2;
+      group.add(hitArea);
+    }
 
     const fallbackVisual = createFallbackNPCVisual(npc);
     group.add(fallbackVisual);
@@ -774,6 +800,8 @@ function createLocations() {
     group.add(fallbackBuilding);
     if (location.id === 'mcdonalds') {
       loadMcDonaldsBuildingModel(group, fallbackBuilding);
+    } else if (location.kind === 'alphaGems') {
+      loadAlphaGemsBuildingModel(group, fallbackBuilding);
     } else if (location.kind === 'cafe') {
       group.remove(fallbackBuilding);
       group.add(createCafeLocationBuilding(location));
@@ -992,6 +1020,25 @@ function loadMcDonaldsBuildingModel(group, fallbackBuilding) {
     undefined,
     () => {
       setStatus(`Could not load ${MCDONALDS_BUILDING_ASSET.split('/').pop()}`);
+    }
+  );
+}
+
+function loadAlphaGemsBuildingModel(group, fallbackBuilding) {
+  const loader = createHeroLoader(ALPHA_GEMS_BUILDING_ASSET);
+
+  loader.load(
+    ALPHA_GEMS_BUILDING_ASSET,
+    (loaded) => {
+      const model = loaded.scene || loaded;
+      model.rotation.x = -Math.PI / 2;
+      prepareModel(model, ALPHA_GEMS_BUILDING_TARGET_HEIGHT);
+      group.remove(fallbackBuilding);
+      group.add(model);
+    },
+    undefined,
+    () => {
+      setStatus(`Could not load ${ALPHA_GEMS_BUILDING_ASSET.split('/').pop()}`);
     }
   );
 }
@@ -2039,9 +2086,16 @@ function handlePointerDown(event) {
   const interactiveRoot = raycaster
     .intersectObjects(interactiveRoots, true)
     .map((hit) => findInteractiveRoot(hit.object))
-    .find((root) => root && isInteractiveInCurrentWorld(root));
+    .filter((root) => root && isInteractiveInCurrentWorld(root))
+    .sort((a, b) => getInteractivePriority(a) - getInteractivePriority(b))[0];
   if (interactiveRoot) {
     approachOrInteract(interactiveRoot);
+    return;
+  }
+
+  const projectedInteractiveRoot = findProjectedInteractiveRoot(event.clientX, event.clientY);
+  if (projectedInteractiveRoot) {
+    approachOrInteract(projectedInteractiveRoot);
     return;
   }
 
@@ -2065,6 +2119,42 @@ function findInteractiveRoot(object) {
 
 function isInteractiveInCurrentWorld(root) {
   return root.visible && root.userData.interactive?.world === gameState.world;
+}
+
+function getInteractivePriority(root) {
+  const priority = {
+    npc: 0,
+    questItem: 1,
+    cashier: 1,
+    exit: 1,
+    location: 2,
+  };
+  return priority[root.userData.interactive?.kind] ?? 3;
+}
+
+function findProjectedInteractiveRoot(clientX, clientY) {
+  const bounds = renderer.domElement.getBoundingClientRect();
+  let bestRoot = null;
+  let bestDistance = Infinity;
+
+  interactiveRoots.forEach((root) => {
+    const radius = root.userData.screenInteractionRadius;
+    if (!Number.isFinite(radius) || !isInteractiveInCurrentWorld(root)) return;
+
+    const projected = root.position.clone();
+    projected.y += root.userData.screenInteractionY || 1.5;
+    projected.project(camera);
+
+    const x = bounds.left + ((projected.x + 1) / 2) * bounds.width;
+    const y = bounds.top + ((1 - projected.y) / 2) * bounds.height;
+    const distance = Math.hypot(clientX - x, clientY - y);
+    if (distance > radius || distance >= bestDistance) return;
+
+    bestDistance = distance;
+    bestRoot = root;
+  });
+
+  return bestRoot;
 }
 
 function getWalkSurface() {
@@ -2263,6 +2353,11 @@ function interactWithLocation(locationId) {
 
   if (locationId === 'luminara_cafe') {
     enterLuminaraCafe();
+    return;
+  }
+
+  if (locationId === 'alpha_gems') {
+    showDialog(location.displayName, 'You are forbidden from entering.');
     return;
   }
 
