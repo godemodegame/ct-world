@@ -20,7 +20,7 @@ const MCDONALDS_WALL_ASSET = '/assets/mcdonalds/wall.png';
 const MCDONALDS_CASHIER_ASSET = '/assets/mcdonalds/cashier.fbx';
 const MCDONALDS_CASHIER_TEXTURE = '/assets/mcdonalds/cashier_texture.jpg';
 const MCDONALDS_BUILDING_TARGET_HEIGHT = 3.4;
-const CASHIER_COUNTER_TARGET_HEIGHT = 2;
+const CASHIER_COUNTER_TARGET_HEIGHT = 2.3;
 const CASHIER_DIALOG_NAME = 'waleswoosh';
 const WALK_COLLIDERS = {
   mcdonaldsInterior: [
