@@ -2,7 +2,7 @@ import './styles.css';
 import * as THREE from 'three';
 import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader.js';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
-import { LOCATIONS, NPCS, QUESTS, WALE_MOCA } from './data/gameData.js';
+import { LOCATIONS, NPCS, QUEST_ITEMS, QUESTS, WALE_MOCA } from './data/gameData.js';
 
 const MAP_TILE_WIDTH = 48;
 const MAP_VISIBLE_TILES = 12;
@@ -31,9 +31,14 @@ const WALK_COLLIDERS = {
     { minX: 5.15, maxX: 7.9, minZ: 0.35, maxZ: 2.5 },
     { minX: 5.15, maxX: 7.9, minZ: 3.1, maxZ: 4.85 },
   ],
+  luminaraCafeInterior: [
+    { minX: -3.8, maxX: 3.8, minZ: -3.8, maxZ: -2.35 },
+    { minX: -4.9, maxX: -3.4, minZ: -1.3, maxZ: 1.35 },
+    { minX: 3.4, maxX: 4.9, minZ: -1.3, maxZ: 1.35 },
+  ],
 };
-const QUEST_STORAGE_KEY = 'ct-world.friesForJessy';
-const LEGACY_QUEST_STORAGE_KEY = 'kris-rpg.friesForJessy';
+const QUEST_STORAGE_KEY = 'ct-world.questState';
+const LEGACY_QUEST_STORAGE_KEYS = ['ct-world.friesForJessy', 'kris-rpg.friesForJessy'];
 
 const app = document.querySelector('#app');
 const status = document.querySelector('#status');
@@ -76,6 +81,7 @@ let walkAction;
 let idleAction;
 let currentAction;
 const npcMixers = [];
+const beggingActors = [];
 let isMoving = false;
 let pendingInteraction = null;
 let dialogPrimaryAction = null;
@@ -91,13 +97,19 @@ interiorGroup.name = "McDonald's Interior";
 interiorGroup.visible = false;
 scene.add(interiorGroup);
 
+const cafeInteriorGroup = new THREE.Group();
+cafeInteriorGroup.name = 'Luminara Coffee Interior';
+cafeInteriorGroup.visible = false;
+scene.add(cafeInteriorGroup);
+
 const gameState = {
   activeQuestId: null,
   questStage: 'not_started',
   inventory: new Set(),
+  completedQuestIds: new Set(),
   feed: [],
   world: 'outside',
-  friesReadyAt: 0,
+  readyAt: 0,
 };
 loadQuestState();
 
@@ -106,7 +118,9 @@ outsideGroup.add(map);
 
 const locations = createLocations();
 const npcs = createNPCs();
+const questItems = createQuestItems();
 const interior = createMcDonaldsInterior();
+const cafeInterior = createLuminaraCafeInterior();
 
 const clickMarker = createClickMarker();
 clickMarker.visible = false;
@@ -151,20 +165,38 @@ function toggleSocialPanel() {
 function loadQuestState() {
   const saved = JSON.parse(
     localStorage.getItem(QUEST_STORAGE_KEY)
-      || localStorage.getItem(LEGACY_QUEST_STORAGE_KEY)
+      || LEGACY_QUEST_STORAGE_KEYS.map((key) => localStorage.getItem(key)).find(Boolean)
       || '{}'
   );
   if (saved.activeQuestId) gameState.activeQuestId = saved.activeQuestId;
-  if (saved.questStage) gameState.questStage = saved.questStage;
-  if (Number.isFinite(saved.friesReadyAt)) gameState.friesReadyAt = saved.friesReadyAt;
+  if (saved.questStage) gameState.questStage = normalizeQuestStage(saved.questStage);
+  if (Array.isArray(saved.completedQuestIds)) {
+    gameState.completedQuestIds = new Set(saved.completedQuestIds);
+  }
+  if (Number.isFinite(saved.readyAt)) gameState.readyAt = saved.readyAt;
+  if (Number.isFinite(saved.friesReadyAt)) gameState.readyAt = saved.friesReadyAt;
+  if (gameState.activeQuestId && gameState.questStage === 'completed') {
+    gameState.completedQuestIds.add(gameState.activeQuestId);
+    gameState.activeQuestId = null;
+    gameState.questStage = 'not_started';
+  }
 }
 
 function saveQuestState() {
   localStorage.setItem(QUEST_STORAGE_KEY, JSON.stringify({
     activeQuestId: gameState.activeQuestId,
     questStage: gameState.questStage,
-    friesReadyAt: gameState.friesReadyAt,
+    readyAt: gameState.readyAt,
+    completedQuestIds: [...gameState.completedQuestIds],
   }));
+}
+
+function normalizeQuestStage(stage) {
+  const legacyStages = {
+    fries_ordered: 'ordered',
+    fries_collected: 'collected',
+  };
+  return legacyStages[stage] || stage;
 }
 
 function createLighting() {
@@ -186,10 +218,11 @@ function createNPCs() {
   const npcMap = new Map();
 
   NPCS.forEach((npc) => {
+    const world = npc.world || 'outside';
     const group = new THREE.Group();
     group.name = npc.displayName;
     group.position.set(npc.position.x, 0, npc.position.z);
-    group.userData.interactive = { kind: 'npc', id: npc.id, world: 'outside' };
+    group.userData.interactive = { kind: 'npc', id: npc.id, world };
 
     const shadow = new THREE.Mesh(
       new THREE.CircleGeometry(0.72, 32),
@@ -203,8 +236,9 @@ function createNPCs() {
     group.add(fallbackVisual);
 
     const questMarker = createQuestMarkerSprite('?');
-    questMarker.position.set(0, 3.72, 0);
+    questMarker.position.set(0, getNPCQuestMarkerY(npc), 0);
     questMarker.userData.baseScale = questMarker.scale.clone();
+    questMarker.visible = Boolean(npc.questId);
     group.userData.questMarker = questMarker;
     group.add(questMarker);
 
@@ -212,19 +246,134 @@ function createNPCs() {
       background: 'rgba(15, 23, 32, 0.82)',
       color: '#ffffff',
     });
-    label.position.set(0, 2.56, 0);
+    label.position.set(0, getNPCLabelY(npc), 0);
     group.add(label);
 
-    if (npc.model) {
-      loadNPCModel(npc.model, group, fallbackVisual, npc.texture);
+    if (npc.behavior === 'begging') {
+      const beggingSetup = createBeggingSetup();
+      group.userData.beggingSetup = beggingSetup;
+      group.add(beggingSetup);
+
+      const speechBubble = createSpeechBubbleSprite('Spare a little cash for me?');
+      speechBubble.position.set(0.3, 3.22, 0.18);
+      group.add(speechBubble);
     }
 
-    outsideGroup.add(group);
+    if (npc.model) {
+      loadNPCModel(npc, group, fallbackVisual);
+    }
+
+    getWorldGroup(world).add(group);
     interactiveRoots.push(group);
     npcMap.set(npc.id, group);
   });
 
   return npcMap;
+}
+
+function getWorldGroup(world) {
+  if (world === 'mcdonaldsInterior') return interiorGroup;
+  if (world === 'luminaraCafeInterior') return cafeInteriorGroup;
+  return outsideGroup;
+}
+
+function getNPCQuestMarkerY(npc) {
+  if (npc.behavior === 'begging') return 3.05;
+  if (npc.behavior === 'sitting') return 2.88;
+  return 3.72;
+}
+
+function getNPCLabelY(npc) {
+  if (npc.behavior === 'begging') return 2.05;
+  if (npc.behavior === 'sitting') return 1.92;
+  return 2.56;
+}
+
+function createQuestItems() {
+  const itemMap = new Map();
+
+  QUEST_ITEMS.forEach((item) => {
+    const group = new THREE.Group();
+    group.name = item.displayName;
+    group.position.set(item.position.x, 0, item.position.z);
+    group.userData.interactive = { kind: 'questItem', id: item.id, world: 'outside' };
+
+    const shadow = new THREE.Mesh(
+      new THREE.CircleGeometry(0.62, 28),
+      new THREE.MeshBasicMaterial({ color: 0x111111, transparent: true, opacity: 0.16 })
+    );
+    shadow.rotation.x = -Math.PI / 2;
+    shadow.position.y = 0.035;
+    group.add(shadow);
+
+    const visual = createCoffeeBeansSack();
+    group.add(visual);
+
+    const questMarker = createQuestMarkerSprite('!');
+    questMarker.position.set(0, 1.9, 0);
+    questMarker.userData.baseScale = questMarker.scale.clone();
+    group.userData.questMarker = questMarker;
+    group.add(questMarker);
+
+    const label = createLabelSprite(item.displayName, {
+      background: 'rgba(63, 44, 34, 0.88)',
+      color: '#f7ead2',
+      fontSize: 34,
+      paddingX: 18,
+      paddingY: 10,
+    });
+    label.position.set(0, 1.34, 0);
+    group.add(label);
+
+    group.visible = false;
+    outsideGroup.add(group);
+    interactiveRoots.push(group);
+    itemMap.set(item.id, group);
+  });
+
+  return itemMap;
+}
+
+function createCoffeeBeansSack() {
+  const group = new THREE.Group();
+  group.name = 'Coffee Beans Sack';
+
+  const sackMaterial = new THREE.MeshStandardMaterial({ color: 0xb88958, roughness: 0.88 });
+  const twineMaterial = new THREE.MeshStandardMaterial({ color: 0x5a3824, roughness: 0.8 });
+  const beanMaterial = new THREE.MeshStandardMaterial({ color: 0x3a1f16, roughness: 0.62 });
+
+  const sack = new THREE.Mesh(new THREE.SphereGeometry(0.48, 24, 16), sackMaterial);
+  sack.scale.set(0.9, 0.72, 0.82);
+  sack.position.y = 0.48;
+  sack.castShadow = true;
+  sack.receiveShadow = true;
+  group.add(sack);
+
+  const neck = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.3, 0.32, 18), sackMaterial);
+  neck.position.y = 0.98;
+  neck.castShadow = true;
+  group.add(neck);
+
+  const tie = new THREE.Mesh(new THREE.TorusGeometry(0.24, 0.035, 8, 28), twineMaterial);
+  tie.position.y = 0.88;
+  tie.rotation.x = Math.PI / 2;
+  tie.castShadow = true;
+  group.add(tie);
+
+  [
+    { x: -0.19, z: 0.45, r: 0.2 },
+    { x: 0.02, z: 0.5, r: -0.1 },
+    { x: 0.2, z: 0.42, r: 0.34 },
+  ].forEach(({ x, z, r }) => {
+    const bean = new THREE.Mesh(new THREE.SphereGeometry(0.075, 14, 8), beanMaterial);
+    bean.scale.set(1, 0.48, 0.68);
+    bean.position.set(x, 0.18, z);
+    bean.rotation.set(0.2, r, -0.32);
+    bean.castShadow = true;
+    group.add(bean);
+  });
+
+  return group;
 }
 
 function createFallbackNPCVisual(npc) {
@@ -263,17 +412,166 @@ function createFallbackNPCVisual(npc) {
   return group;
 }
 
-function loadNPCModel(asset, group, fallbackVisual, textureAsset) {
+function createBeggingSetup() {
+  const group = new THREE.Group();
+  group.name = 'Begging Setup';
+
+  const cardboardMaterial = new THREE.MeshStandardMaterial({ color: 0x9b6b3f, roughness: 0.92 });
+  const cupMaterial = new THREE.MeshStandardMaterial({ color: 0xf1ead8, roughness: 0.72 });
+  const coinMaterial = new THREE.MeshStandardMaterial({ color: 0xe0b64b, roughness: 0.38, metalness: 0.42 });
+
+  const mat = new THREE.Mesh(new THREE.BoxGeometry(1.65, 0.035, 1.25), cardboardMaterial);
+  mat.position.set(0, 0.08, 0.04);
+  mat.rotation.y = -0.08;
+  mat.castShadow = true;
+  mat.receiveShadow = true;
+  group.add(mat);
+
+  const sign = new THREE.Mesh(
+    new THREE.PlaneGeometry(1.22, 0.58),
+    createBeggingSignMaterial()
+  );
+  sign.name = 'Begging Sign';
+  sign.position.set(0.1, 0.48, 0.84);
+  sign.rotation.x = -0.2;
+  sign.castShadow = true;
+  group.add(sign);
+
+  const cup = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.13, 0.34, 24), cupMaterial);
+  cup.name = 'Begging Cup';
+  cup.position.set(0.45, 0.22, 1.02);
+  cup.castShadow = true;
+  cup.receiveShadow = true;
+  group.add(cup);
+
+  const cupLip = new THREE.Mesh(new THREE.TorusGeometry(0.16, 0.018, 8, 24), cupMaterial);
+  cupLip.name = 'Begging Cup Lip';
+  cupLip.position.set(0.45, 0.4, 1.02);
+  cupLip.rotation.x = Math.PI / 2;
+  cupLip.castShadow = true;
+  group.add(cupLip);
+
+  [
+    { x: 0.32, z: 0.82, r: 0.14 },
+    { x: 0.57, z: 0.88, r: -0.22 },
+    { x: 0.43, z: 1.2, r: 0.33 },
+  ].forEach(({ x, z, r }) => {
+    const coin = new THREE.Mesh(new THREE.CylinderGeometry(0.075, 0.075, 0.018, 18), coinMaterial);
+    coin.position.set(x, 0.12, z);
+    coin.rotation.set(Math.PI / 2, 0, r);
+    coin.castShadow = true;
+    group.add(coin);
+  });
+
+  return group;
+}
+
+function createSpeechBubbleSprite(text) {
+  const canvas = document.createElement('canvas');
+  canvas.width = 640;
+  canvas.height = 236;
+  const ctx = canvas.getContext('2d');
+
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.94)';
+  roundRect(ctx, 28, 18, 584, 146, 28);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(474, 156);
+  ctx.lineTo(424, 208);
+  ctx.lineTo(524, 164);
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.strokeStyle = 'rgba(31, 41, 55, 0.22)';
+  ctx.lineWidth = 7;
+  roundRect(ctx, 28, 18, 584, 146, 28);
+  ctx.stroke();
+
+  ctx.fillStyle = '#111827';
+  ctx.font = '800 38px Inter, Arial, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  wrapCanvasText(ctx, text, canvas.width / 2, 78, 500, 42);
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  const material = new THREE.SpriteMaterial({ map: texture, transparent: true });
+  const sprite = new THREE.Sprite(material);
+  sprite.scale.set(3.2, 1.18, 1);
+  return sprite;
+}
+
+function wrapCanvasText(ctx, text, x, y, maxWidth, lineHeight) {
+  const words = text.split(' ');
+  const lines = [];
+  let line = '';
+
+  words.forEach((word) => {
+    const testLine = line ? `${line} ${word}` : word;
+    if (ctx.measureText(testLine).width > maxWidth && line) {
+      lines.push(line);
+      line = word;
+    } else {
+      line = testLine;
+    }
+  });
+  if (line) lines.push(line);
+
+  const startY = y - ((lines.length - 1) * lineHeight) / 2;
+  lines.forEach((textLine, index) => {
+    ctx.fillText(textLine, x, startY + index * lineHeight);
+  });
+}
+
+function createBeggingSignMaterial() {
+  const canvas = document.createElement('canvas');
+  canvas.width = 512;
+  canvas.height = 256;
+  const ctx = canvas.getContext('2d');
+
+  ctx.fillStyle = '#9b6b3f';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.strokeStyle = '#604124';
+  ctx.lineWidth = 14;
+  ctx.strokeRect(16, 16, canvas.width - 32, canvas.height - 32);
+  ctx.fillStyle = '#2a1b10';
+  ctx.font = '900 56px Inter, Arial, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('SPARE $?', canvas.width / 2, 95);
+  ctx.font = '760 34px Inter, Arial, sans-serif';
+  ctx.fillText('need fries money', canvas.width / 2, 160);
+  ctx.fillStyle = 'rgba(42, 27, 16, 0.22)';
+  ctx.fillRect(70, 205, 372, 8);
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  const material = new THREE.MeshBasicMaterial({ map: texture, transparent: true, side: THREE.DoubleSide });
+  return material;
+}
+
+function loadNPCModel(npc, group, fallbackVisual) {
+  const asset = npc.model;
   const loader = createHeroLoader(asset);
-  const texture = textureAsset ? loadCharacterTexture(textureAsset) : null;
+  const texture = npc.texture ? loadCharacterTexture(npc.texture) : null;
   loader.load(
     asset,
     (loaded) => {
       const model = loaded.scene || loaded;
-      prepareModel(model, NPC_TARGET_HEIGHT);
+      prepareModel(model, ['begging', 'sitting'].includes(npc.behavior) ? 1.72 : NPC_TARGET_HEIGHT);
       if (texture) applyTextureToModel(model, texture);
-      model.rotation.y = Math.PI + MODEL_FACE_DOWN_OFFSET;
-      playNPCIdleAnimation(model, loaded.animations);
+      model.rotation.y = getNPCModelRotationY(npc);
+      if (npc.behavior === 'begging') {
+        playNPCIdleAnimation(model, loaded.animations);
+        registerBeggingActor(group, model, { animateBones: false });
+      } else if (npc.behavior === 'sitting') {
+        const hasSittingAnimation = playNPCAnimation(model, loaded.animations, ['sit', 'sitting', 'seated', 'chair', 'mixamo'], {
+          useFirstFallback: true,
+        });
+        if (!hasSittingAnimation) applySittingPose(model);
+      } else {
+        playNPCIdleAnimation(model, loaded.animations);
+      }
       group.remove(fallbackVisual);
       group.add(model);
     },
@@ -282,6 +580,158 @@ function loadNPCModel(asset, group, fallbackVisual, textureAsset) {
       setStatus(`Could not load ${asset.split('/').pop()}`);
     }
   );
+}
+
+function getNPCModelRotationY(npc) {
+  if (Number.isFinite(npc.modelRotationY)) return npc.modelRotationY;
+  if (npc.id === 'luminara') return MODEL_FACE_DOWN_OFFSET - Math.PI / 2;
+  if (npc.behavior === 'begging') return MODEL_FACE_DOWN_OFFSET - Math.PI / 2;
+
+  return Math.PI + MODEL_FACE_DOWN_OFFSET;
+}
+
+function applyBeggingPose(model) {
+  rotateBone(model, 'Hips', { x: -0.18 });
+  rotateBone(model, 'Spine', { x: 0.18 });
+  rotateBone(model, 'Spine1', { x: 0.12 });
+  rotateBone(model, 'LeftUpLeg', { x: -1.34, z: 0.16 });
+  rotateBone(model, 'RightUpLeg', { x: -1.34, z: -0.16 });
+  rotateBone(model, 'LeftLeg', { x: 1.18 });
+  rotateBone(model, 'RightLeg', { x: 1.18 });
+  rotateBone(model, 'LeftFoot', { x: 0.34 });
+  rotateBone(model, 'RightFoot', { x: 0.34 });
+  rotateBone(model, 'LeftArm', { z: -0.48 });
+  rotateBone(model, 'RightArm', { z: 0.48 });
+  rotateBone(model, 'LeftForeArm', { z: -0.52 });
+  rotateBone(model, 'RightForeArm', { z: 0.52 });
+  model.position.y -= 0.06;
+  model.updateMatrixWorld(true);
+}
+
+function applySittingPose(model) {
+  rotateBone(model, 'Hips', { x: -0.12 });
+  rotateBone(model, 'Spine', { x: 0.18 });
+  rotateBone(model, 'Spine1', { x: 0.1 });
+  rotateBone(model, 'LeftUpLeg', { x: -1.32, z: 0.08 });
+  rotateBone(model, 'RightUpLeg', { x: -1.32, z: -0.08 });
+  rotateBone(model, 'LeftLeg', { x: 1.24 });
+  rotateBone(model, 'RightLeg', { x: 1.24 });
+  rotateBone(model, 'LeftFoot', { x: 0.28 });
+  rotateBone(model, 'RightFoot', { x: 0.28 });
+  rotateBone(model, 'LeftArm', { z: -0.3 });
+  rotateBone(model, 'RightArm', { z: 0.3 });
+  rotateBone(model, 'LeftForeArm', { z: -0.26 });
+  rotateBone(model, 'RightForeArm', { z: 0.26 });
+  rotateBone(model, 'Head', { x: -0.04 });
+  model.updateMatrixWorld(true);
+
+  const box = new THREE.Box3().setFromObject(model);
+  if (Number.isFinite(box.min.y)) {
+    model.position.y -= box.min.y;
+  }
+  model.position.y -= 0.24;
+  model.updateMatrixWorld(true);
+}
+
+function registerBeggingActor(group, model, options = {}) {
+  const boneNames = [
+    'Hips',
+    'Spine',
+    'Spine1',
+    'LeftArm',
+    'RightArm',
+    'LeftForeArm',
+    'RightForeArm',
+    'LeftHand',
+    'RightHand',
+    'Head',
+  ];
+  const bones = Object.fromEntries(
+    boneNames
+      .map((name) => [name, findBone(model, name)])
+      .filter(([, bone]) => bone)
+  );
+  const baseRotations = new Map(
+    Object.values(bones).map((bone) => [bone, bone.rotation.clone()])
+  );
+
+  group.rotation.y = 0;
+  const setup = group.userData.beggingSetup;
+  const sign = setup?.getObjectByName('Begging Sign');
+  const cup = setup?.getObjectByName('Begging Cup');
+  const cupLip = setup?.getObjectByName('Begging Cup Lip');
+  beggingActors.push({
+    group,
+    model,
+    bones,
+    sign,
+    cup,
+    cupLip,
+    baseModelY: model.position.y,
+    baseSignRotationZ: sign?.rotation.z || 0,
+    baseCupY: cup?.position.y || 0,
+    baseCupLipY: cupLip?.position.y || 0,
+    baseRotations,
+    animateBones: options.animateBones ?? true,
+    startedAt: performance.now() * 0.001,
+  });
+}
+
+function updateBeggingActors() {
+  const time = performance.now() * 0.001;
+  beggingActors.forEach((actor) => {
+    const elapsed = time - actor.startedAt;
+    const breathe = Math.sin(elapsed * 2.2);
+    const plead = Math.sin(elapsed * 3.4);
+    const smallWave = Math.sin(elapsed * 5.1);
+
+    if (actor.animateBones) {
+      actor.model.position.y = actor.baseModelY + breathe * 0.018;
+      setBeggingBoneOffset(actor, 'Hips', { x: breathe * 0.025 });
+      setBeggingBoneOffset(actor, 'Spine', { x: breathe * 0.055 });
+      setBeggingBoneOffset(actor, 'Spine1', { x: breathe * 0.04 });
+      setBeggingBoneOffset(actor, 'Head', { x: -0.04 + smallWave * 0.035, y: plead * 0.035 });
+      setBeggingBoneOffset(actor, 'LeftArm', { z: -0.08 + plead * 0.08 });
+      setBeggingBoneOffset(actor, 'RightArm', { z: 0.08 - plead * 0.08 });
+      setBeggingBoneOffset(actor, 'LeftForeArm', { z: -0.2 + plead * 0.16 });
+      setBeggingBoneOffset(actor, 'RightForeArm', { z: 0.2 - plead * 0.16 });
+      setBeggingBoneOffset(actor, 'LeftHand', { z: smallWave * 0.08 });
+      setBeggingBoneOffset(actor, 'RightHand', { z: -smallWave * 0.08 });
+    }
+    if (actor.sign) actor.sign.rotation.z = actor.baseSignRotationZ + plead * 0.045;
+    if (actor.cup) actor.cup.position.y = actor.baseCupY + Math.max(0, smallWave) * 0.018;
+    if (actor.cupLip) actor.cupLip.position.y = actor.baseCupLipY + Math.max(0, smallWave) * 0.018;
+  });
+}
+
+function setBeggingBoneOffset(actor, name, offset) {
+  const bone = actor.bones[name];
+  const base = actor.baseRotations.get(bone);
+  if (!bone || !base) return;
+
+  bone.rotation.set(
+    base.x + (offset.x || 0),
+    base.y + (offset.y || 0),
+    base.z + (offset.z || 0)
+  );
+}
+
+function rotateBone(model, name, rotation) {
+  const bone = findBone(model, name);
+  if (!bone) return;
+
+  bone.rotation.x += rotation.x || 0;
+  bone.rotation.y += rotation.y || 0;
+  bone.rotation.z += rotation.z || 0;
+}
+
+function findBone(model, name) {
+  let match = null;
+  model.traverse((child) => {
+    if (match || !child.isBone) return;
+    if (child.name === name || child.name.endsWith(`:${name}`)) match = child;
+  });
+  return match;
 }
 
 function loadCharacterTexture(asset) {
@@ -318,6 +768,9 @@ function createLocations() {
     group.add(fallbackBuilding);
     if (location.id === 'mcdonalds') {
       loadMcDonaldsBuildingModel(group, fallbackBuilding);
+    } else if (location.kind === 'cafe') {
+      group.remove(fallbackBuilding);
+      group.add(createCafeLocationBuilding(location));
     }
 
     outsideGroup.add(group);
@@ -364,6 +817,156 @@ function createFallbackLocationBuilding(location) {
   counter.position.set(0, 0.47, 1.52);
   counter.castShadow = true;
   group.add(counter);
+
+  return group;
+}
+
+function createCafeLocationBuilding(location) {
+  const group = new THREE.Group();
+  group.name = `${location.displayName} Building`;
+
+  const wallMaterial = new THREE.MeshStandardMaterial({ color: location.color, roughness: 0.74 });
+  const roofMaterial = new THREE.MeshStandardMaterial({ color: 0x3f2c22, roughness: 0.7 });
+  const creamMaterial = new THREE.MeshStandardMaterial({ color: 0xf7ead2, roughness: 0.7 });
+  const glassMaterial = new THREE.MeshStandardMaterial({
+    color: 0x7fc6d8,
+    roughness: 0.22,
+    metalness: 0.04,
+    transparent: true,
+    opacity: 0.78,
+  });
+  const woodMaterial = new THREE.MeshStandardMaterial({ color: 0x6f4630, roughness: 0.78 });
+  const plantMaterial = new THREE.MeshStandardMaterial({ color: 0x37764a, roughness: 0.82 });
+  const beanMaterial = new THREE.MeshStandardMaterial({ color: 0x4a2618, roughness: 0.66 });
+
+  const base = new THREE.Mesh(new THREE.BoxGeometry(3.2, 1.46, 2.45), wallMaterial);
+  base.position.y = 0.73;
+  base.castShadow = true;
+  base.receiveShadow = true;
+  group.add(base);
+
+  const roof = new THREE.Mesh(new THREE.BoxGeometry(3.72, 0.36, 2.88), roofMaterial);
+  roof.position.y = 1.64;
+  roof.castShadow = true;
+  group.add(roof);
+
+  const awning = createCafeAwning(location.accentColor, 0xf7ead2);
+  awning.position.set(0, 1.38, 1.34);
+  group.add(awning);
+
+  const sign = createCafeSign(location.displayName);
+  sign.position.set(0, 2.08, 1.47);
+  group.add(sign);
+
+  const leftWindow = new THREE.Mesh(new THREE.BoxGeometry(0.72, 0.58, 0.08), glassMaterial);
+  leftWindow.position.set(-0.78, 0.94, 1.25);
+  leftWindow.castShadow = true;
+  group.add(leftWindow);
+
+  const rightWindow = leftWindow.clone();
+  rightWindow.position.x = 0.78;
+  group.add(rightWindow);
+
+  const door = new THREE.Mesh(new THREE.BoxGeometry(0.54, 0.94, 0.09), woodMaterial);
+  door.position.set(0, 0.52, 1.3);
+  door.castShadow = true;
+  group.add(door);
+
+  const handle = new THREE.Mesh(new THREE.SphereGeometry(0.045, 12, 8), creamMaterial);
+  handle.position.set(0.17, 0.55, 1.36);
+  group.add(handle);
+
+  const bench = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.22, 0.34), woodMaterial);
+  bench.position.set(-1.05, 0.24, -1.58);
+  bench.castShadow = true;
+  group.add(bench);
+
+  [-1.38, -0.72].forEach((x) => {
+    const leg = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.38, 0.14), woodMaterial);
+    leg.position.set(x, 0.02, -1.58);
+    leg.castShadow = true;
+    group.add(leg);
+  });
+
+  [
+    { x: -1.85, z: 1.08 },
+    { x: 1.85, z: 1.08 },
+  ].forEach(({ x, z }) => {
+    const planter = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.27, 0.34, 18), woodMaterial);
+    planter.position.set(x, 0.18, z);
+    planter.castShadow = true;
+    group.add(planter);
+
+    const leaves = new THREE.Mesh(new THREE.SphereGeometry(0.24, 16, 10), plantMaterial);
+    leaves.position.set(x, 0.52, z);
+    leaves.castShadow = true;
+    group.add(leaves);
+  });
+
+  const cup = createCoffeeCup(creamMaterial, beanMaterial);
+  cup.position.set(1.12, 1.98, -0.5);
+  cup.rotation.y = -0.42;
+  group.add(cup);
+
+  return group;
+}
+
+function createCafeAwning(primaryColor, secondaryColor) {
+  const group = new THREE.Group();
+  const stripeWidth = 0.42;
+  for (let index = 0; index < 7; index += 1) {
+    const material = new THREE.MeshStandardMaterial({
+      color: index % 2 === 0 ? primaryColor : secondaryColor,
+      roughness: 0.54,
+    });
+    const stripe = new THREE.Mesh(new THREE.BoxGeometry(stripeWidth, 0.28, 0.36), material);
+    stripe.position.set((index - 3) * stripeWidth, 0, 0);
+    stripe.castShadow = true;
+    group.add(stripe);
+  }
+  return group;
+}
+
+function createCafeSign(text) {
+  const canvas = document.createElement('canvas');
+  canvas.width = 640;
+  canvas.height = 180;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#3f2c22';
+  roundRect(ctx, 0, 0, canvas.width, canvas.height, 28);
+  ctx.fill();
+  ctx.fillStyle = '#f2c66d';
+  ctx.font = '900 54px Inter, Arial, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, canvas.width / 2, 72);
+  ctx.fillStyle = '#f7ead2';
+  ctx.font = '760 28px Inter, Arial, sans-serif';
+  ctx.fillText('family cafe', canvas.width / 2, 124);
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  const material = new THREE.MeshBasicMaterial({ map: texture, transparent: true });
+  return new THREE.Mesh(new THREE.PlaneGeometry(2.45, 0.7), material);
+}
+
+function createCoffeeCup(cupMaterial, coffeeMaterial) {
+  const group = new THREE.Group();
+  const cup = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.18, 0.44, 24), cupMaterial);
+  cup.position.y = 0.22;
+  cup.castShadow = true;
+  group.add(cup);
+
+  const coffee = new THREE.Mesh(new THREE.CircleGeometry(0.18, 24), coffeeMaterial);
+  coffee.rotation.x = -Math.PI / 2;
+  coffee.position.y = 0.45;
+  group.add(coffee);
+
+  const handle = new THREE.Mesh(new THREE.TorusGeometry(0.17, 0.035, 8, 22, Math.PI * 1.35), cupMaterial);
+  handle.position.set(0.22, 0.26, 0);
+  handle.rotation.z = Math.PI / 2;
+  handle.castShadow = true;
+  group.add(handle);
 
   return group;
 }
@@ -454,6 +1057,159 @@ function createMcDonaldsInterior() {
   interactiveRoots.push(exit);
 
   return { floor, cashier, exit };
+}
+
+function createLuminaraCafeInterior() {
+  const floorMaterial = new THREE.MeshStandardMaterial({ color: 0x7c5a3c, roughness: 0.88 });
+  const wallMaterial = new THREE.MeshStandardMaterial({ color: 0x9f6a45, roughness: 0.76 });
+  const trimMaterial = new THREE.MeshStandardMaterial({ color: 0x3f2c22, roughness: 0.7 });
+  const creamMaterial = new THREE.MeshStandardMaterial({ color: 0xf7ead2, roughness: 0.72 });
+  const goldMaterial = new THREE.MeshStandardMaterial({ color: 0xf2c66d, roughness: 0.52 });
+  const plantMaterial = new THREE.MeshStandardMaterial({ color: 0x37764a, roughness: 0.82 });
+  const metalMaterial = new THREE.MeshStandardMaterial({ color: 0xd8d1c4, roughness: 0.42, metalness: 0.18 });
+
+  const floor = new THREE.Mesh(new THREE.PlaneGeometry(12, 10, 1, 1), floorMaterial);
+  floor.name = 'Luminara Coffee Interior Floor';
+  floor.rotation.x = -Math.PI / 2;
+  floor.receiveShadow = true;
+  cafeInteriorGroup.add(floor);
+
+  const backWall = new THREE.Mesh(new THREE.BoxGeometry(12, 3, 0.32), wallMaterial);
+  backWall.position.set(0, 1.5, -4.85);
+  backWall.receiveShadow = true;
+  cafeInteriorGroup.add(backWall);
+
+  const leftWall = new THREE.Mesh(new THREE.BoxGeometry(0.32, 3, 10), wallMaterial);
+  leftWall.position.set(-6, 1.5, 0);
+  leftWall.receiveShadow = true;
+  cafeInteriorGroup.add(leftWall);
+
+  const rightWall = leftWall.clone();
+  rightWall.position.x = 6;
+  cafeInteriorGroup.add(rightWall);
+
+  cafeInteriorGroup.add(createWallStripe(0, 2.52, -4.65, 11.5, 0.16, 0.12, goldMaterial));
+  cafeInteriorGroup.add(createWallStripe(-5.82, 2.34, 0, 0.1, 0.14, 9.4, goldMaterial));
+  cafeInteriorGroup.add(createWallStripe(5.82, 2.34, 0, 0.1, 0.14, 9.4, goldMaterial));
+
+  const menu = createMenuBoard('COFFEE', ['Latte', 'Mocha', 'Cold Brew'], '#9f6a45');
+  menu.position.set(0, 2.22, -4.62);
+  cafeInteriorGroup.add(menu);
+
+  const counter = createCafeInteriorCounter({ trimMaterial, creamMaterial, goldMaterial, metalMaterial });
+  counter.position.set(0, 0, -2.95);
+  cafeInteriorGroup.add(counter);
+
+  [
+    { x: -3.65, z: -0.8, rotation: 0.18 },
+    { x: 3.65, z: -0.7, rotation: -0.16 },
+    { x: -2.6, z: 2.05, rotation: -0.1 },
+    { x: 2.6, z: 2.05, rotation: 0.1 },
+  ].forEach((placement, index) => {
+    const tableSet = createDiningSet({
+      creamMaterial,
+      yellowMaterial: goldMaterial,
+      redMaterial: index % 2 ? trimMaterial : wallMaterial,
+      darkMaterial: trimMaterial,
+      metalMaterial,
+    });
+    tableSet.position.set(placement.x, 0, placement.z);
+    tableSet.rotation.y = placement.rotation;
+    cafeInteriorGroup.add(tableSet);
+  });
+
+  [
+    { x: -5.55, z: 2.9 },
+    { x: 5.55, z: 2.7 },
+  ].forEach(({ x, z }) => {
+    const planter = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.34, 0.42, 18), trimMaterial);
+    planter.position.set(x, 0.21, z);
+    planter.castShadow = true;
+    cafeInteriorGroup.add(planter);
+
+    const leaves = new THREE.Mesh(new THREE.SphereGeometry(0.34, 18, 12), plantMaterial);
+    leaves.position.set(x, 0.64, z);
+    leaves.castShadow = true;
+    cafeInteriorGroup.add(leaves);
+  });
+
+  const exit = createExitMarker();
+  exit.position.set(0, 0, 3.8);
+  exit.userData.interactive = { kind: 'exit', id: 'luminara_cafe_exit', world: 'luminaraCafeInterior' };
+  cafeInteriorGroup.add(exit);
+  interactiveRoots.push(exit);
+
+  return { floor, exit };
+}
+
+function createCafeInteriorCounter(materials) {
+  const group = new THREE.Group();
+  group.name = 'Luminara Coffee Counter';
+
+  const counter = new THREE.Mesh(new THREE.BoxGeometry(7.6, 1, 0.92), materials.trimMaterial);
+  counter.position.y = 0.5;
+  counter.castShadow = true;
+  counter.receiveShadow = true;
+  group.add(counter);
+
+  const counterTop = new THREE.Mesh(new THREE.BoxGeometry(7.9, 0.16, 1.08), materials.creamMaterial);
+  counterTop.position.y = 1.06;
+  counterTop.castShadow = true;
+  group.add(counterTop);
+
+  const frontPanel = createCafeSign('Luminara Coffee');
+  frontPanel.position.set(0, 0.68, 0.48);
+  frontPanel.scale.set(0.84, 0.84, 1);
+  group.add(frontPanel);
+
+  const espressoMachine = createEspressoMachine(materials.metalMaterial, materials.goldMaterial);
+  espressoMachine.position.set(-2.35, 1.18, -0.08);
+  group.add(espressoMachine);
+
+  const cups = createStackedCups(materials.creamMaterial);
+  cups.position.set(2.5, 1.16, 0.02);
+  group.add(cups);
+
+  return group;
+}
+
+function createEspressoMachine(metalMaterial, accentMaterial) {
+  const group = new THREE.Group();
+  group.name = 'Espresso Machine';
+
+  const body = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.58, 0.48), metalMaterial);
+  body.position.y = 0.29;
+  body.castShadow = true;
+  group.add(body);
+
+  const top = new THREE.Mesh(new THREE.BoxGeometry(1.02, 0.14, 0.38), accentMaterial);
+  top.position.y = 0.67;
+  top.castShadow = true;
+  group.add(top);
+
+  [-0.28, 0.28].forEach((x) => {
+    const portafilter = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, 0.34, 12), accentMaterial);
+    portafilter.position.set(x, 0.12, 0.34);
+    portafilter.rotation.x = Math.PI / 2;
+    portafilter.castShadow = true;
+    group.add(portafilter);
+  });
+
+  return group;
+}
+
+function createStackedCups(cupMaterial) {
+  const group = new THREE.Group();
+  group.name = 'Stacked Coffee Cups';
+
+  for (let index = 0; index < 3; index += 1) {
+    const cup = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.15, 0.2, 20), cupMaterial);
+    cup.position.y = 0.1 + index * 0.17;
+    cup.castShadow = true;
+    group.add(cup);
+  }
+
+  return group;
 }
 
 function createMcDonaldsInteriorDecor() {
@@ -855,6 +1611,19 @@ function createExitMarker() {
   const group = new THREE.Group();
   group.name = 'Exit';
 
+  const hitArea = new THREE.Mesh(
+    new THREE.CircleGeometry(1.12, 48),
+    new THREE.MeshBasicMaterial({
+      color: 0x1d9bf0,
+      transparent: true,
+      opacity: 0.12,
+      side: THREE.DoubleSide,
+    })
+  );
+  hitArea.rotation.x = -Math.PI / 2;
+  hitArea.position.y = 0.045;
+  group.add(hitArea);
+
   const mat = new THREE.Mesh(
     new THREE.RingGeometry(0.86, 1.05, 48),
     new THREE.MeshBasicMaterial({
@@ -1186,13 +1955,22 @@ function findClip(clips, names) {
 }
 
 function playNPCIdleAnimation(model, animations = []) {
+  playNPCAnimation(model, animations, ['idle', 'stand', 'breath'], {
+    useFirstFallback: true,
+  });
+}
+
+function playNPCAnimation(model, animations = [], names = [], options = {}) {
   const clips = removeRootMotionFromClips(animations);
-  if (!clips.length) return;
+  if (!clips.length) return false;
 
   const mixer = new THREE.AnimationMixer(model);
-  const clip = findClip(clips, ['idle', 'stand', 'breath']) || clips[0];
+  const clip = findClip(clips, names) || (options.useFirstFallback ? clips[0] : null);
+  if (!clip) return false;
+
   mixer.clipAction(clip).play();
   npcMixers.push(mixer);
+  return true;
 }
 
 function createFallbackHero() {
@@ -1275,7 +2053,9 @@ function isInteractiveInCurrentWorld(root) {
 }
 
 function getWalkSurface() {
-  return gameState.world === 'mcdonaldsInterior' ? interior.floor : map;
+  if (gameState.world === 'mcdonaldsInterior') return interior.floor;
+  if (gameState.world === 'luminaraCafeInterior') return cafeInterior.floor;
+  return map;
 }
 
 function approachOrInteract(root) {
@@ -1391,8 +2171,13 @@ function interact(root) {
     return;
   }
 
+  if (target.kind === 'questItem') {
+    interactWithQuestItem(target.id);
+    return;
+  }
+
   if (target.kind === 'exit') {
-    exitMcDonalds();
+    exitInterior(target.id);
   }
 }
 
@@ -1401,7 +2186,7 @@ function interactWithNPC(npcId) {
   if (!npc) return;
 
   const quest = QUESTS[npc.questId];
-  if (!quest) {
+  if (!quest || gameState.completedQuestIds.has(quest.id)) {
     showDialog(npc.displayName, npc.bio);
     return;
   }
@@ -1409,7 +2194,7 @@ function interactWithNPC(npcId) {
   if (!gameState.activeQuestId || gameState.questStage === 'not_started') {
     showDialog(
       npc.displayName,
-      "I have a crisis-level request: I need McDonald's fries. Hot ones. Can you get them for me?",
+      quest.dialog.offer,
       {
         primaryLabel: 'Accept quest',
         onPrimary: () => acceptQuest(quest, npc),
@@ -1425,28 +2210,31 @@ function interactWithNPC(npcId) {
   }
 
   if (gameState.questStage === 'accepted') {
-    showDialog(npc.displayName, "The McDonald's is on the map. Go inside and order from the cashier.");
+    showDialog(npc.displayName, quest.dialog.accepted);
     return;
   }
 
-  if (gameState.questStage === 'fries_ordered') {
-    showDialog(npc.displayName, 'You ordered them? Perfect. We respect the process. Come back when the bag exists.');
+  if (gameState.questStage === 'ordered') {
+    showDialog(npc.displayName, quest.dialog.ordered);
     return;
   }
 
-  if (gameState.questStage === 'fries_collected') {
+  if (gameState.questStage === 'collected') {
     gameState.inventory.delete(quest.itemId);
-    gameState.questStage = 'completed';
+    gameState.completedQuestIds.add(quest.id);
+    gameState.activeQuestId = null;
+    gameState.questStage = 'not_started';
+    gameState.readyAt = 0;
     saveQuestState();
     addFeed({ authorId: npc.id, text: quest.posts.complete });
-    showDialog(npc.displayName, 'You brought the fries. This is not delivery. This is friendship infrastructure.');
+    showDialog(npc.displayName, quest.dialog.collected);
     setStatus('Quest complete');
     updateQuestUI();
     updateQuestMarkers();
     return;
   }
 
-  showDialog(npc.displayName, 'Those fries were historic. Your social capital increased.');
+  showDialog(npc.displayName, quest.dialog.completed || npc.bio);
 }
 
 function interactWithLocation(locationId) {
@@ -1458,57 +2246,82 @@ function interactWithLocation(locationId) {
     return;
   }
 
+  if (locationId === 'luminara_cafe') {
+    enterLuminaraCafe();
+    return;
+  }
+
   showDialog(location.displayName, 'Nothing to do here yet.');
 }
 
 function interactWithCashier() {
   const quest = gameState.activeQuestId && QUESTS[gameState.activeQuestId];
-  if (!quest || gameState.questStage === 'not_started') {
-    showDialog(CASHIER_DIALOG_NAME, 'Welcome in. Fries are available, but you do not have an order to place yet.');
+  if (!quest || quest.type !== 'order' || gameState.questStage === 'not_started') {
+    showDialog(CASHIER_DIALOG_NAME, quest?.dialog.cashierNoQuest || 'Welcome in. Nothing to prepare for you right now.');
     return;
   }
 
   if (gameState.questStage === 'accepted') {
-    gameState.questStage = 'fries_ordered';
-    gameState.friesReadyAt = Date.now() + quest.waitMs;
+    gameState.questStage = 'ordered';
+    gameState.readyAt = Date.now() + quest.waitMs;
     saveQuestState();
     addFeed({ authorName: "McDonald's", handle: '@mcdonalds', text: quest.posts.ordered });
-    showDialog(CASHIER_DIALOG_NAME, "Got it. One fries order. It will take about five minutes, so come back later.");
+    showDialog(CASHIER_DIALOG_NAME, quest.dialog.cashierOrder);
     setStatus('Order placed');
     updateQuestUI();
     updateQuestMarkers();
     return;
   }
 
-  if (gameState.questStage === 'fries_ordered') {
-    if (Date.now() < gameState.friesReadyAt) {
-      showDialog(CASHIER_DIALOG_NAME, 'Still working on those fries. Check back a little later.');
+  if (gameState.questStage === 'ordered') {
+    if (Date.now() < gameState.readyAt) {
+      showDialog(CASHIER_DIALOG_NAME, quest.dialog.cashierWaiting);
       return;
     }
 
     gameState.inventory.add(quest.itemId);
-    gameState.questStage = 'fries_collected';
+    gameState.questStage = 'collected';
     saveQuestState();
     addFeed({ authorName: "McDonald's", handle: '@mcdonalds', text: quest.posts.pickedUp });
-    showDialog(CASHIER_DIALOG_NAME, 'Your fries are ready. Careful, the bag is hot.');
-    setStatus('Fries picked up');
+    showDialog(CASHIER_DIALOG_NAME, quest.dialog.cashierPickup);
+    setStatus(`${quest.itemName} picked up`);
     updateQuestUI();
     updateQuestMarkers();
     return;
   }
 
-  if (gameState.questStage === 'fries_collected') {
-    showDialog(CASHIER_DIALOG_NAME, 'You already picked up the fries. jessyfries is waiting.');
+  if (gameState.questStage === 'collected') {
+    showDialog(CASHIER_DIALOG_NAME, quest.dialog.cashierAlreadyPickedUp);
     return;
   }
 
   showDialog(CASHIER_DIALOG_NAME, 'Thanks for stopping by.');
 }
 
+function interactWithQuestItem(itemId) {
+  const item = QUEST_ITEMS.find((candidate) => candidate.id === itemId);
+  const quest = Object.values(QUESTS).find((candidate) => candidate.pickupId === itemId);
+  if (!item || !quest) return;
+
+  if (gameState.activeQuestId !== quest.id || gameState.questStage !== 'accepted') {
+    showDialog(item.displayName, quest.dialog.pickupHint || 'This might be useful later.');
+    return;
+  }
+
+  gameState.inventory.add(quest.itemId);
+  gameState.questStage = 'collected';
+  saveQuestState();
+  addFeed({ authorId: quest.giverId, text: quest.posts.pickedUp });
+  showDialog(item.displayName, quest.dialog.pickupCollected || `You picked up ${quest.itemName}.`);
+  setStatus(`${quest.itemName} found`);
+  updateQuestUI();
+  updateQuestMarkers();
+}
+
 function acceptQuest(quest, npc) {
   gameState.activeQuestId = quest.id;
   gameState.questStage = 'accepted';
-  gameState.friesReadyAt = 0;
+  gameState.readyAt = 0;
   saveQuestState();
   addFeed({ authorId: npc.id, text: quest.posts.accepted });
   setStatus('Quest accepted');
@@ -1518,8 +2331,7 @@ function acceptQuest(quest, npc) {
 
 function enterMcDonalds() {
   gameState.world = 'mcdonaldsInterior';
-  outsideGroup.visible = false;
-  interiorGroup.visible = true;
+  setVisibleWorld('mcdonaldsInterior');
   scene.background = new THREE.Color(0x2d2621);
   pendingInteraction = null;
   isMoving = false;
@@ -1529,11 +2341,37 @@ function enterMcDonalds() {
   setStatus("Inside McDonald's");
 }
 
+function enterLuminaraCafe() {
+  gameState.world = 'luminaraCafeInterior';
+  setVisibleWorld('luminaraCafeInterior');
+  scene.background = new THREE.Color(0x4b3327);
+  pendingInteraction = null;
+  isMoving = false;
+  clickMarker.visible = false;
+  hero.position.set(0, 0, 3.25);
+  targetPosition.copy(hero.position);
+  setStatus('Inside Luminara Coffee');
+}
+
+function setVisibleWorld(world) {
+  outsideGroup.visible = world === 'outside';
+  interiorGroup.visible = world === 'mcdonaldsInterior';
+  cafeInteriorGroup.visible = world === 'luminaraCafeInterior';
+}
+
+function exitInterior(exitId) {
+  if (exitId === 'luminara_cafe_exit') {
+    exitLuminaraCafe();
+    return;
+  }
+
+  exitMcDonalds();
+}
+
 function exitMcDonalds() {
   const location = locations.get('mcdonalds');
   gameState.world = 'outside';
-  outsideGroup.visible = true;
-  interiorGroup.visible = false;
+  setVisibleWorld('outside');
   scene.background = new THREE.Color(0x8db6c7);
   pendingInteraction = null;
   isMoving = false;
@@ -1545,10 +2383,49 @@ function exitMcDonalds() {
   setStatus('Back outside');
 }
 
+function exitLuminaraCafe() {
+  const location = locations.get('luminara_cafe');
+  gameState.world = 'outside';
+  setVisibleWorld('outside');
+  scene.background = new THREE.Color(0x8db6c7);
+  pendingInteraction = null;
+  isMoving = false;
+  clickMarker.visible = false;
+  if (location) {
+    hero.position.set(location.position.x + 1.85, 0, location.position.z + 2.45);
+  }
+  targetPosition.copy(hero.position);
+  setStatus('Back outside');
+}
+
 function seedFeed() {
   const jessy = NPCS.find((npc) => npc.id === 'jessy');
+  const luminara = NPCS.find((npc) => npc.id === 'luminara');
+  const bigchog = NPCS.find((npc) => npc.id === 'bigchog');
   const quest = QUESTS.fries_for_jessy;
   addFeed({ authorId: jessy.id, text: quest.posts.start });
+  addFeed({ authorId: luminara.id, text: QUESTS.coffee_beans_for_luminara.posts.start });
+  addFeed({
+    authorId: bigchog.id,
+    text: 'vibecoding arc is evolving',
+    replies: 128,
+    reposts: 42,
+    likes: '1.4K',
+    views: '22K',
+    bookmarks: 16,
+  });
+  addFeed({
+    authorName: 'Vali | ATH 🇻🇳',
+    handle: '@validotxyz',
+    avatar: '/assets/vali/vali_pfp.jpeg',
+    verifiedIcon: '/assets/checkmark.svg.png',
+    text: 'Can you just send me some money?',
+    replies: 19,
+    reposts: 7,
+    likes: 88,
+    views: '4K',
+    bookmarks: 3,
+  });
   addFeed({
     authorName: WALE_MOCA.displayName,
     handle: WALE_MOCA.handle,
@@ -1567,9 +2444,12 @@ function seedFeed() {
 
 function addFeed(post) {
   const npc = post.authorId && NPCS.find((candidate) => candidate.id === post.authorId);
-  const fixedStats = npc?.id === 'jessy'
-    ? { replies: 377, reposts: 80, likes: 762, views: '80K' }
-    : {};
+  const npcStats = {
+    jessy: { replies: 377, reposts: 80, likes: 762, views: '80K' },
+    luminara: { replies: 42, reposts: 18, likes: 311, views: '12K' },
+    bigchog: { replies: 128, reposts: 42, likes: '1.4K', views: '22K' },
+  };
+  const fixedStats = npcStats[npc?.id] || {};
   const hasExplicitViews = Object.prototype.hasOwnProperty.call(post, 'views');
   gameState.feed.unshift({
     displayName: post.authorName || npc?.displayName || 'ct world',
@@ -1722,17 +2602,21 @@ function updateQuestUI() {
   const giver = npcs.get(quest.giverId);
 
   if (gameState.questStage === 'accepted') {
+    if (quest.type === 'pickup') {
+      questChip.textContent = `${quest.title}: find ${quest.itemName}`;
+      return;
+    }
     questChip.textContent = `${quest.title}: order ${quest.itemName} at ${shop?.name || "McDonald's"}`;
     return;
   }
 
-  if (gameState.questStage === 'fries_ordered') {
+  if (gameState.questStage === 'ordered') {
     questChip.textContent = `${quest.title}: return later for pickup`;
     return;
   }
 
-  if (gameState.questStage === 'fries_collected') {
-    questChip.textContent = `${quest.title}: return to ${giver?.name || 'jessyfries'}`;
+  if (gameState.questStage === 'collected') {
+    questChip.textContent = `${quest.title}: return to ${giver?.name || quest.giverId}`;
     return;
   }
 
@@ -1740,23 +2624,32 @@ function updateQuestUI() {
 }
 
 function updateQuestMarkers() {
-  const jessy = npcs.get('jessy');
-  if (!jessy?.userData.questMarker) return;
+  NPCS.forEach((npc) => {
+    const root = npcs.get(npc.id);
+    const marker = root?.userData.questMarker;
+    const quest = QUESTS[npc.questId];
+    if (!marker || !quest) return;
 
-  const marker = jessy.userData.questMarker;
-  if (!gameState.activeQuestId || gameState.questStage === 'not_started') {
-    marker.visible = true;
-    setQuestMarkerLabel(marker, '?');
-    return;
-  }
+    const isCompleted = gameState.completedQuestIds.has(quest.id);
+    const isActive = gameState.activeQuestId === quest.id;
+    const canStartQuest = !gameState.activeQuestId && !isCompleted;
+    const canCompleteQuest = isActive && gameState.questStage === 'collected';
 
-  if (gameState.questStage === 'fries_collected') {
-    marker.visible = true;
-    setQuestMarkerLabel(marker, '!');
-    return;
-  }
+    marker.visible = canStartQuest || canCompleteQuest;
+    if (marker.visible) setQuestMarkerLabel(marker, canCompleteQuest ? '!' : '?');
+  });
 
-  marker.visible = false;
+  QUEST_ITEMS.forEach((item) => {
+    const root = questItems.get(item.id);
+    const marker = root?.userData.questMarker;
+    const quest = Object.values(QUESTS).find((candidate) => candidate.pickupId === item.id);
+    if (!root || !marker || !quest) return;
+
+    const shouldShow = gameState.activeQuestId === quest.id && gameState.questStage === 'accepted';
+    root.visible = shouldShow;
+    marker.visible = shouldShow;
+    if (shouldShow) setQuestMarkerLabel(marker, '!');
+  });
 }
 
 function setQuestMarkerLabel(sprite, text) {
@@ -1798,6 +2691,7 @@ function tick() {
   updateInfiniteMap();
   updateMarker();
   updateQuestMarkerPulse();
+  updateBeggingActors();
   if (heroMixer) heroMixer.update(delta);
   npcMixers.forEach((mixer) => mixer.update(delta));
   renderer.render(scene, camera);
@@ -1908,12 +2802,14 @@ function updateMarker() {
 }
 
 function updateQuestMarkerPulse() {
-  const marker = npcs.get('jessy')?.userData.questMarker;
-  if (!marker?.visible) return;
-
   const pulse = 1 + Math.sin(performance.now() * 0.006) * 0.07;
-  const baseScale = marker.userData.baseScale || marker.scale;
-  marker.scale.set(baseScale.x * pulse, baseScale.y * pulse, baseScale.z);
+  [...npcs.values(), ...questItems.values()].forEach((root) => {
+    const marker = root.userData.questMarker;
+    if (!marker?.visible) return;
+
+    const baseScale = marker.userData.baseScale || marker.scale;
+    marker.scale.set(baseScale.x * pulse, baseScale.y * pulse, baseScale.z);
+  });
 }
 
 function resize() {
