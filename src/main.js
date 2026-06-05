@@ -26,10 +26,10 @@ const WALK_COLLIDERS = {
   mcdonaldsInterior: [
     { minX: -4.6, maxX: 4.6, minZ: -4.15, maxZ: -2.35 },
     { minX: -7.4, maxX: -4.55, minZ: -5.45, maxZ: -4.05 },
-    { minX: -7.9, maxX: -5.15, minZ: -0.35, maxZ: 1.65 },
-    { minX: -7.9, maxX: -5.15, minZ: 2.3, maxZ: 4.55 },
-    { minX: 5.15, maxX: 7.9, minZ: 0.35, maxZ: 2.5 },
-    { minX: 5.15, maxX: 7.9, minZ: 3.1, maxZ: 4.85 },
+    { minX: -8.2, maxX: -5.25, minZ: -0.9, maxZ: 1.45 },
+    { minX: -8.2, maxX: -5.25, minZ: 3.05, maxZ: 5.4 },
+    { minX: 5.25, maxX: 8.2, minZ: -0.35, maxZ: 2 },
+    { minX: 5.25, maxX: 8.2, minZ: 3.4, maxZ: 5.75 },
   ],
   luminaraCafeInterior: [
     { minX: -3.8, maxX: 3.8, minZ: -3.8, maxZ: -2.35 },
@@ -284,6 +284,7 @@ function getNPCQuestMarkerY(npc) {
 }
 
 function getNPCLabelY(npc) {
+  if (Number.isFinite(npc.labelY)) return npc.labelY;
   if (npc.behavior === 'begging') return 2.05;
   if (npc.behavior === 'sitting') return 1.92;
   return 2.56;
@@ -558,7 +559,7 @@ function loadNPCModel(npc, group, fallbackVisual) {
     asset,
     (loaded) => {
       const model = loaded.scene || loaded;
-      prepareModel(model, ['begging', 'sitting'].includes(npc.behavior) ? 1.72 : NPC_TARGET_HEIGHT);
+      prepareModel(model, getNPCTargetHeight(npc));
       if (texture) applyTextureToModel(model, texture);
       model.rotation.y = getNPCModelRotationY(npc);
       if (npc.behavior === 'begging') {
@@ -580,6 +581,11 @@ function loadNPCModel(npc, group, fallbackVisual) {
       setStatus(`Could not load ${asset.split('/').pop()}`);
     }
   );
+}
+
+function getNPCTargetHeight(npc) {
+  if (Number.isFinite(npc.targetHeight)) return npc.targetHeight;
+  return ['begging', 'sitting'].includes(npc.behavior) ? 1.72 : NPC_TARGET_HEIGHT;
 }
 
 function getNPCModelRotationY(npc) {
@@ -1238,20 +1244,27 @@ function createMcDonaldsInteriorDecor() {
   });
 
   [
-    { x: -6.55, z: 0.7, rotation: 0.1 },
-    { x: -6.55, z: 3.35, rotation: -0.08 },
-    { x: 6.55, z: 1.45, rotation: -0.12 },
-    { x: 6.55, z: 3.95, rotation: 0.1 },
+    { x: -6.75, z: 0.2, rotation: 0.1 },
+    { x: -6.75, z: 4.2, rotation: -0.08 },
+    { x: 6.75, z: 0.85, rotation: -0.12 },
+    { x: 6.75, z: 4.45, rotation: 0.1 },
   ].forEach((placement) => {
-    const tableSet = createDiningSet({ redMaterial, yellowMaterial, darkMaterial, creamMaterial, metalMaterial });
+    const tableSet = createDiningSet({
+      redMaterial,
+      yellowMaterial,
+      darkMaterial,
+      creamMaterial,
+      metalMaterial,
+      scale: 1.22,
+    });
     tableSet.position.set(placement.x, 0, placement.z);
     tableSet.rotation.y = placement.rotation;
     group.add(tableSet);
   });
 
   [
-    { x: -8.72, z: 1.85, width: 0.18, depth: 2.2 },
-    { x: 8.72, z: 2.45, width: 0.18, depth: 2.5 },
+    { x: -8.72, z: 1.85, width: 0.2, depth: 2.75 },
+    { x: 8.72, z: 2.45, width: 0.2, depth: 3.05 },
   ].forEach((placement) => {
     const booth = createBooth(placement.width, placement.depth, redMaterial, darkMaterial);
     booth.position.set(placement.x, 0, placement.z);
@@ -1262,8 +1275,8 @@ function createMcDonaldsInteriorDecor() {
     { x: -2.2, z: -0.9 },
     { x: 0, z: -0.55 },
     { x: 2.2, z: -0.9 },
-    { x: -6.3, z: 2.05 },
-    { x: 6.35, z: 2.85 },
+    { x: -6.45, z: 2.25 },
+    { x: 6.55, z: 2.75 },
   ].forEach(({ x, z }) => {
     const mat = createFloorMat();
     mat.position.set(x, 0.055, z);
@@ -1387,6 +1400,7 @@ function createScreenMaterial(title, rows, accent) {
 function createDiningSet(materials) {
   const group = new THREE.Group();
   group.name = 'Dining Set';
+  const diningScale = materials.scale || 1;
   const tabletop = new THREE.Mesh(new THREE.CylinderGeometry(0.58, 0.58, 0.12, 32), materials.creamMaterial || materials.yellowMaterial);
   tabletop.position.y = 0.72;
   tabletop.castShadow = true;
@@ -1410,6 +1424,7 @@ function createDiningSet(materials) {
     group.add(chair);
   });
 
+  group.scale.setScalar(diningScale);
   return group;
 }
 
