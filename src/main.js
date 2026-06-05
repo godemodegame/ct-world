@@ -1525,7 +1525,7 @@ function createCashier() {
     background: 'rgba(15, 23, 32, 0.86)',
     color: '#ffffff',
   });
-  label.position.set(0, 2.38, 0);
+  label.position.set(0, 2.68, 0);
   group.add(label);
 
   loadCashierModel(group, body, apron, head, hat);
@@ -1541,7 +1541,7 @@ function loadCashierModel(group, ...fallbackParts) {
     WALE_MOCA.model,
     (loaded) => {
       const model = loaded.scene || loaded;
-      prepareModel(model, NPC_TARGET_HEIGHT);
+      prepareModel(model, HERO_TARGET_HEIGHT);
       applyTextureToModel(model, texture);
       model.rotation.y = Math.PI + MODEL_FACE_DOWN_OFFSET;
       playNPCIdleAnimation(model, loaded.animations);
