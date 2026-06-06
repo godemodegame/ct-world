@@ -23,6 +23,77 @@ canvas {
   display: block;
 }
 
+.loading-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background:
+    linear-gradient(rgba(10, 13, 18, 0.7), rgba(10, 13, 18, 0.82)),
+    url('/assets/map.png') center / cover;
+  opacity: 1;
+  pointer-events: auto;
+  transition: opacity 220ms ease, visibility 220ms ease;
+}
+
+.loading-screen.is-hidden {
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.loading-panel {
+  display: grid;
+  width: min(420px, calc(100vw - 48px));
+  gap: 10px;
+  padding: 22px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 8px;
+  background: rgba(11, 15, 20, 0.86);
+  box-shadow: 0 22px 70px rgba(0, 0, 0, 0.34);
+  backdrop-filter: blur(14px);
+}
+
+.loading-brand {
+  color: #ffc72c;
+  font-size: 13px;
+  font-weight: 860;
+  text-transform: uppercase;
+}
+
+.loading-title {
+  color: #ffffff;
+  font-size: 26px;
+  font-weight: 840;
+  line-height: 1.1;
+}
+
+.loading-detail,
+.loading-count {
+  color: #c7d0d8;
+  font-size: 14px;
+  line-height: 1.35;
+}
+
+.loading-track {
+  width: 100%;
+  height: 10px;
+  margin-top: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.loading-bar {
+  width: 8%;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #ffc72c, #1d9bf0, #ff7aa8);
+  transition: width 180ms ease;
+}
+
 #socialPanel {
   position: fixed;
   top: 16px;

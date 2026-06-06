@@ -8,6 +8,7 @@ const MAP_TILE_WIDTH = 48;
 const MAP_VISIBLE_TILES = 12;
 const HERO_SPEED = 9;
 const INTERACTION_DISTANCE = 2.6;
+const DIALOG_CLOSE_DISTANCE = INTERACTION_DISTANCE + 0.6;
 const HERO_COLLISION_RADIUS = 0.55;
 const HERO_ASSETS = ['/assets/hero.fbx', '/assets/hero.glb', '/assets/hero.gltf'];
 const HERO_TARGET_HEIGHT = 2.4;
@@ -45,6 +46,15 @@ const WALK_COLLIDERS = {
 };
 const QUEST_STORAGE_KEY = 'ct-world.questState';
 const LEGACY_QUEST_STORAGE_KEYS = ['ct-world.friesForJessy', 'kris-rpg.friesForJessy'];
+const GLOBAL_LOADING_WORLD = 'global';
+const WORLD_IDS = ['outside', 'mcdonaldsInterior', 'luminaraCafeInterior'];
+const WORLD_LABELS = {
+  outside: 'outside',
+  mcdonaldsInterior: "McDonald's",
+  luminaraCafeInterior: 'Luminara Coffee',
+};
+const LOADING_MINIMUM_MS = 520;
+const TRANSITION_MINIMUM_MS = 680;
 
 const app = document.querySelector('#app');
 const status = document.querySelector('#status');
@@ -57,6 +67,11 @@ const dialogName = document.querySelector('#dialogName');
 const dialogText = document.querySelector('#dialogText');
 const dialogClose = document.querySelector('#dialogClose');
 const dialogSecondary = document.querySelector('#dialogSecondary');
+const loadingScreen = document.querySelector('#loadingScreen');
+const loadingTitle = document.querySelector('#loadingTitle');
+const loadingDetail = document.querySelector('#loadingDetail');
+const loadingBar = document.querySelector('#loadingBar');
+const loadingCount = document.querySelector('#loadingCount');
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x8db6c7);
@@ -92,6 +107,8 @@ let isMoving = false;
 let pendingInteraction = null;
 let dialogPrimaryAction = null;
 let dialogSecondaryAction = null;
+let activeDialogRoot = null;
+let currentInteractionRoot = null;
 
 const interactiveRoots = [];
 const outsideGroup = new THREE.Group();
@@ -116,8 +133,19 @@ const gameState = {
   feed: [],
   world: 'outside',
   readyAt: 0,
+  isLoading: true,
 };
 loadQuestState();
+
+const loadingState = {
+  tasks: new Map(),
+  nextTaskId: 1,
+  waiters: [],
+  activeWorld: 'outside',
+  visibleSince: performance.now(),
+  hideTimer: null,
+};
+showLoadingScreen('Loading ct world', 'Preparing outside models...', 'outside');
 
 const map = createMap();
 outsideGroup.add(map);
@@ -139,19 +167,21 @@ updateQuestUI();
 updateQuestMarkers();
 resize();
 renderer.setAnimationLoop(tick);
+waitForWorldAssets('outside', LOADING_MINIMUM_MS).then(() => {
+  hideLoadingScreen();
+  if (status) setStatus('Click the map');
+});
 
 window.addEventListener('resize', resize);
 renderer.domElement.addEventListener('pointerdown', handlePointerDown);
 dialogClose.addEventListener('click', () => {
   const action = dialogPrimaryAction;
-  dialogPanel.hidden = true;
-  clearDialogActions();
+  closeDialog();
   if (action) action();
 });
 dialogSecondary.addEventListener('click', () => {
   const action = dialogSecondaryAction;
-  dialogPanel.hidden = true;
-  clearDialogActions();
+  closeDialog();
   if (action) action();
 });
 socialToggle?.addEventListener('click', toggleSocialPanel);
@@ -166,6 +196,114 @@ function toggleSocialPanel() {
   socialToggle.setAttribute('aria-label', isCollapsed ? 'Expand timeline' : 'Collapse timeline');
   socialToggle.textContent = isCollapsed ? 'Show' : 'Hide';
   if (!isCollapsed) scrollFeedToBottom();
+}
+
+function showLoadingScreen(title, detail, world = gameState.world, options = {}) {
+  if (loadingState.hideTimer) {
+    window.clearTimeout(loadingState.hideTimer);
+    loadingState.hideTimer = null;
+  }
+
+  loadingState.activeWorld = world;
+  loadingState.visibleSince = performance.now();
+  gameState.isLoading = true;
+
+  if (loadingTitle) loadingTitle.textContent = title;
+  if (loadingDetail) loadingDetail.textContent = detail;
+  loadingScreen?.classList.remove('is-hidden');
+  updateLoadingProgress();
+
+  if (options.status) setStatus(options.status);
+}
+
+function hideLoadingScreen() {
+  gameState.isLoading = false;
+  loadingScreen?.classList.add('is-hidden');
+}
+
+function trackAssetLoad(asset, worlds, label) {
+  const taskWorlds = normalizeLoadingWorlds(worlds);
+  const id = loadingState.nextTaskId;
+  loadingState.nextTaskId += 1;
+
+  const task = {
+    id,
+    asset,
+    label: label || asset.split('/').pop() || 'asset',
+    worlds: new Set(taskWorlds),
+    state: 'pending',
+  };
+  loadingState.tasks.set(id, task);
+  updateLoadingProgress();
+
+  const settle = (state) => {
+    if (task.state !== 'pending') return;
+    task.state = state;
+    updateLoadingProgress();
+    checkLoadingWaiters();
+  };
+
+  return {
+    complete: () => settle('complete'),
+    fail: () => settle('failed'),
+  };
+}
+
+function normalizeLoadingWorlds(worlds) {
+  if (!worlds) return [gameState.world];
+  const list = Array.isArray(worlds) ? worlds : [worlds];
+  return list.flatMap((world) => (world === GLOBAL_LOADING_WORLD ? WORLD_IDS : [world]));
+}
+
+function getLoadingTasksForWorld(world) {
+  return [...loadingState.tasks.values()].filter((task) => task.worlds.has(world));
+}
+
+function getPendingLoadingTasks(world) {
+  return getLoadingTasksForWorld(world).filter((task) => task.state === 'pending');
+}
+
+function updateLoadingProgress() {
+  const tasks = getLoadingTasksForWorld(loadingState.activeWorld);
+  const total = tasks.length;
+  const settled = tasks.filter((task) => task.state !== 'pending').length;
+  const pending = total - settled;
+  const percent = total ? Math.max(8, Math.round((settled / total) * 100)) : 8;
+
+  if (loadingBar) loadingBar.style.width = `${pending ? percent : 100}%`;
+  if (loadingCount) {
+    loadingCount.textContent = pending
+      ? `${settled}/${total} assets loaded`
+      : `${WORLD_LABELS[loadingState.activeWorld] || 'world'} ready`;
+  }
+}
+
+function waitForWorldAssets(world, minimumMs = LOADING_MINIMUM_MS) {
+  return new Promise((resolve) => {
+    loadingState.waiters.push({
+      world,
+      readyAfter: performance.now() + minimumMs,
+      resolve,
+    });
+    checkLoadingWaiters();
+  });
+}
+
+function checkLoadingWaiters() {
+  const now = performance.now();
+  loadingState.waiters = loadingState.waiters.filter((waiter) => {
+    const pending = getPendingLoadingTasks(waiter.world).length;
+    if (pending > 0) return true;
+
+    const delay = waiter.readyAfter - now;
+    if (delay > 0) {
+      window.setTimeout(checkLoadingWaiters, delay);
+      return true;
+    }
+
+    waiter.resolve();
+    return false;
+  });
 }
 
 function loadQuestState() {
@@ -227,7 +365,7 @@ function createNPCs() {
     const world = npc.world || 'outside';
     const group = new THREE.Group();
     group.name = npc.displayName;
-    group.position.set(npc.position.x, 0, npc.position.z);
+    group.position.set(npc.position.x, npc.position.y ?? 0, npc.position.z);
     group.userData.interactive = { kind: 'npc', id: npc.id, world };
     if (Number.isFinite(npc.interactionRadius)) {
       group.userData.screenInteractionRadius = npc.screenInteractionRadius ?? 86;
@@ -579,11 +717,14 @@ function createBeggingSignMaterial() {
 
 function loadNPCModel(npc, group, fallbackVisual) {
   const asset = npc.model;
+  const world = npc.world || 'outside';
+  const modelLoad = trackAssetLoad(asset, world, `${npc.displayName} model`);
   const loader = createHeroLoader(asset);
-  const texture = npc.texture ? loadCharacterTexture(npc.texture) : null;
+  const texture = npc.texture ? loadCharacterTexture(npc.texture, world, `${npc.displayName} texture`) : null;
   loader.load(
     asset,
     (loaded) => {
+      modelLoad.complete();
       const model = loaded.scene || loaded;
       prepareModel(model, getNPCTargetHeight(npc));
       if (texture) applyTextureToModel(model, texture);
@@ -592,9 +733,7 @@ function loadNPCModel(npc, group, fallbackVisual) {
         playNPCIdleAnimation(model, loaded.animations);
         registerBeggingActor(group, model, { animateBones: false });
       } else if (npc.behavior === 'sitting') {
-        const hasSittingAnimation = playNPCAnimation(model, loaded.animations, ['sit', 'sitting', 'seated', 'chair', 'mixamo'], {
-          useFirstFallback: true,
-        });
+        const hasSittingAnimation = playNPCAnimation(model, loaded.animations, ['sit', 'sitting', 'seated', 'chair']);
         if (!hasSittingAnimation) applySittingPose(model);
       } else {
         playNPCIdleAnimation(model, loaded.animations);
@@ -604,6 +743,7 @@ function loadNPCModel(npc, group, fallbackVisual) {
     },
     undefined,
     () => {
+      modelLoad.fail();
       setStatus(`Could not load ${asset.split('/').pop()}`);
     }
   );
@@ -766,8 +906,19 @@ function findBone(model, name) {
   return match;
 }
 
-function loadCharacterTexture(asset) {
-  const texture = new THREE.TextureLoader().load(asset);
+function loadCharacterTexture(asset, worlds = gameState.world, label = `${asset.split('/').pop()} texture`) {
+  const textureLoad = trackAssetLoad(asset, worlds, label);
+  const texture = new THREE.TextureLoader().load(
+    asset,
+    () => {
+      textureLoad.complete();
+    },
+    undefined,
+    () => {
+      textureLoad.fail();
+      setStatus(`Could not load ${asset.split('/').pop()}`);
+    }
+  );
   texture.colorSpace = THREE.SRGBColorSpace;
   texture.anisotropy = renderer.capabilities.getMaxAnisotropy();
   return texture;
@@ -1007,10 +1158,12 @@ function createCoffeeCup(cupMaterial, coffeeMaterial) {
 
 function loadMcDonaldsBuildingModel(group, fallbackBuilding) {
   const loader = createHeroLoader(MCDONALDS_BUILDING_ASSET);
+  const modelLoad = trackAssetLoad(MCDONALDS_BUILDING_ASSET, 'outside', "McDonald's building");
 
   loader.load(
     MCDONALDS_BUILDING_ASSET,
     (loaded) => {
+      modelLoad.complete();
       const model = loaded.scene || loaded;
       model.rotation.x = -Math.PI / 2;
       prepareModel(model, MCDONALDS_BUILDING_TARGET_HEIGHT);
@@ -1019,6 +1172,7 @@ function loadMcDonaldsBuildingModel(group, fallbackBuilding) {
     },
     undefined,
     () => {
+      modelLoad.fail();
       setStatus(`Could not load ${MCDONALDS_BUILDING_ASSET.split('/').pop()}`);
     }
   );
@@ -1026,10 +1180,12 @@ function loadMcDonaldsBuildingModel(group, fallbackBuilding) {
 
 function loadAlphaGemsBuildingModel(group, fallbackBuilding) {
   const loader = createHeroLoader(ALPHA_GEMS_BUILDING_ASSET);
+  const modelLoad = trackAssetLoad(ALPHA_GEMS_BUILDING_ASSET, 'outside', 'Alpha Gems building');
 
   loader.load(
     ALPHA_GEMS_BUILDING_ASSET,
     (loaded) => {
+      modelLoad.complete();
       const model = loaded.scene || loaded;
       model.rotation.x = -Math.PI / 2;
       prepareModel(model, ALPHA_GEMS_BUILDING_TARGET_HEIGHT);
@@ -1038,6 +1194,7 @@ function loadAlphaGemsBuildingModel(group, fallbackBuilding) {
     },
     undefined,
     () => {
+      modelLoad.fail();
       setStatus(`Could not load ${ALPHA_GEMS_BUILDING_ASSET.split('/').pop()}`);
     }
   );
@@ -1048,11 +1205,13 @@ function createMcDonaldsInterior() {
     color: 0xeadfc9,
     repeat: [5, 4],
     roughness: 0.86,
+    world: 'mcdonaldsInterior',
   });
   const wallMaterial = createRepeatingTextureMaterial(MCDONALDS_WALL_ASSET, {
     color: 0xb82018,
     repeat: [6, 1],
     roughness: 0.72,
+    world: 'mcdonaldsInterior',
   });
 
   const floor = new THREE.Mesh(
@@ -1582,11 +1741,13 @@ function createCashier() {
 
 function loadCashierModel(group, ...fallbackParts) {
   const loader = createHeroLoader(WALE_MOCA.model);
-  const texture = loadCharacterTexture(WALE_MOCA.texture);
+  const modelLoad = trackAssetLoad(WALE_MOCA.model, 'mcdonaldsInterior', 'cashier model');
+  const texture = loadCharacterTexture(WALE_MOCA.texture, 'mcdonaldsInterior', 'cashier texture');
 
   loader.load(
     WALE_MOCA.model,
     (loaded) => {
+      modelLoad.complete();
       const model = loaded.scene || loaded;
       prepareModel(model, HERO_TARGET_HEIGHT);
       applyTextureToModel(model, texture);
@@ -1597,6 +1758,7 @@ function loadCashierModel(group, ...fallbackParts) {
     },
     undefined,
     () => {
+      modelLoad.fail();
       setStatus(`Could not load ${WALE_MOCA.model.split('/').pop()}`);
     }
   );
@@ -1622,11 +1784,13 @@ function createCashierCounter() {
 
 function loadCashierCounterModel(group, fallback) {
   const loader = createHeroLoader(MCDONALDS_CASHIER_ASSET);
-  const texture = loadCharacterTexture(MCDONALDS_CASHIER_TEXTURE);
+  const modelLoad = trackAssetLoad(MCDONALDS_CASHIER_ASSET, 'mcdonaldsInterior', 'cashier counter model');
+  const texture = loadCharacterTexture(MCDONALDS_CASHIER_TEXTURE, 'mcdonaldsInterior', 'cashier counter texture');
 
   loader.load(
     MCDONALDS_CASHIER_ASSET,
     (loaded) => {
+      modelLoad.complete();
       const model = loaded.scene || loaded;
       prepareModel(model, CASHIER_COUNTER_TARGET_HEIGHT);
       applyTextureToModel(model, texture);
@@ -1636,6 +1800,7 @@ function loadCashierCounterModel(group, fallback) {
     },
     undefined,
     () => {
+      modelLoad.fail();
       setStatus(`Could not load ${MCDONALDS_CASHIER_ASSET.split('/').pop()}`);
     }
   );
@@ -1648,10 +1813,12 @@ function createRepeatingTextureMaterial(asset, options) {
     metalness: 0,
   });
   const [repeatX, repeatY] = options.repeat;
+  const textureLoad = trackAssetLoad(asset, options.world || gameState.world, `${asset.split('/').pop()} texture`);
 
   new THREE.TextureLoader().load(
     asset,
     (texture) => {
+      textureLoad.complete();
       texture.colorSpace = THREE.SRGBColorSpace;
       texture.anisotropy = renderer.capabilities.getMaxAnisotropy();
       texture.wrapS = THREE.RepeatWrapping;
@@ -1662,6 +1829,7 @@ function createRepeatingTextureMaterial(asset, options) {
     },
     undefined,
     () => {
+      textureLoad.fail();
       setStatus(`Could not load ${asset.split('/').pop()}`);
     }
   );
@@ -1801,9 +1969,11 @@ function createMap() {
   });
 
   const loader = new THREE.TextureLoader();
+  const mapLoad = trackAssetLoad(MAP_ASSET, 'outside', 'outside map');
   loader.load(
     MAP_ASSET,
     (loadedTexture) => {
+      mapLoad.complete();
       loadedTexture.colorSpace = THREE.SRGBColorSpace;
       loadedTexture.anisotropy = renderer.capabilities.getMaxAnisotropy();
       configureInfiniteTexture(loadedTexture);
@@ -1814,6 +1984,7 @@ function createMap() {
     },
     undefined,
     () => {
+      mapLoad.fail();
       setStatus('Click the map');
     }
   );
@@ -1914,12 +2085,14 @@ function loadHero() {
   scene.add(hero);
   setStatus('Loading model...');
 
-  loadHeroAsset(0);
+  const heroLoad = trackAssetLoad(HERO_ASSETS[0], GLOBAL_LOADING_WORLD, 'player model');
+  loadHeroAsset(0, heroLoad);
 }
 
-function loadHeroAsset(assetIndex) {
+function loadHeroAsset(assetIndex, heroLoad) {
   const asset = HERO_ASSETS[assetIndex];
   if (!asset) {
+    heroLoad.fail();
     setStatus('Click the map');
     return;
   }
@@ -1927,9 +2100,12 @@ function loadHeroAsset(assetIndex) {
   const loader = createHeroLoader(asset);
   loader.load(
     asset,
-    (loaded) => applyLoadedHero(loaded, asset),
+    (loaded) => {
+      heroLoad.complete();
+      applyLoadedHero(loaded, asset);
+    },
     undefined,
-    () => loadHeroAsset(assetIndex + 1)
+    () => loadHeroAsset(assetIndex + 1, heroLoad)
   );
 }
 
@@ -2078,6 +2254,8 @@ function createClickMarker() {
 }
 
 function handlePointerDown(event) {
+  if (gameState.isLoading) return;
+
   const bounds = renderer.domElement.getBoundingClientRect();
   pointer.x = ((event.clientX - bounds.left) / bounds.width) * 2 - 1;
   pointer.y = -((event.clientY - bounds.top) / bounds.height) * 2 + 1;
@@ -2186,6 +2364,8 @@ function getApproachPoint(root) {
 }
 
 function moveHeroTo(point) {
+  if (gameState.isLoading) return;
+
   targetPosition.copy(constrainWalkPoint(point));
   targetPosition.y = 0;
   clickMarker.position.set(targetPosition.x, 0.05, targetPosition.z);
@@ -2260,29 +2440,34 @@ function flatDistance(a, b) {
 }
 
 function interact(root) {
-  const target = root.userData.interactive;
-  if (target.kind === 'npc') {
-    interactWithNPC(target.id);
-    return;
-  }
+  currentInteractionRoot = root;
+  try {
+    const target = root.userData.interactive;
+    if (target.kind === 'npc') {
+      interactWithNPC(target.id);
+      return;
+    }
 
-  if (target.kind === 'location') {
-    interactWithLocation(target.id);
-    return;
-  }
+    if (target.kind === 'location') {
+      interactWithLocation(target.id);
+      return;
+    }
 
-  if (target.kind === 'cashier') {
-    interactWithCashier();
-    return;
-  }
+    if (target.kind === 'cashier') {
+      interactWithCashier();
+      return;
+    }
 
-  if (target.kind === 'questItem') {
-    interactWithQuestItem(target.id);
-    return;
-  }
+    if (target.kind === 'questItem') {
+      interactWithQuestItem(target.id);
+      return;
+    }
 
-  if (target.kind === 'exit') {
-    exitInterior(target.id);
+    if (target.kind === 'exit') {
+      exitInterior(target.id);
+    }
+  } finally {
+    currentInteractionRoot = null;
   }
 }
 
@@ -2439,28 +2624,41 @@ function acceptQuest(quest, npc) {
   updateQuestMarkers();
 }
 
-function enterMcDonalds() {
+async function enterMcDonalds() {
+  if (gameState.isLoading) return;
+  prepareWorldTransition("Entering McDonald's", 'Loading counter, cashier, and interior models...', 'mcdonaldsInterior');
+  await waitForWorldAssets('mcdonaldsInterior', TRANSITION_MINIMUM_MS);
+
   gameState.world = 'mcdonaldsInterior';
   setVisibleWorld('mcdonaldsInterior');
   scene.background = new THREE.Color(0x2d2621);
-  pendingInteraction = null;
-  isMoving = false;
-  clickMarker.visible = false;
   hero.position.set(0, 0, 4.2);
   targetPosition.copy(hero.position);
   setStatus("Inside McDonald's");
+  hideLoadingScreen();
 }
 
-function enterLuminaraCafe() {
+async function enterLuminaraCafe() {
+  if (gameState.isLoading) return;
+  prepareWorldTransition('Entering Luminara Coffee', 'Loading cafe models and characters...', 'luminaraCafeInterior');
+  await waitForWorldAssets('luminaraCafeInterior', TRANSITION_MINIMUM_MS);
+
   gameState.world = 'luminaraCafeInterior';
   setVisibleWorld('luminaraCafeInterior');
   scene.background = new THREE.Color(0x4b3327);
-  pendingInteraction = null;
-  isMoving = false;
-  clickMarker.visible = false;
   hero.position.set(0, 0, 3.25);
   targetPosition.copy(hero.position);
   setStatus('Inside Luminara Coffee');
+  hideLoadingScreen();
+}
+
+function prepareWorldTransition(title, detail, targetWorld) {
+  closeDialog();
+  pendingInteraction = null;
+  isMoving = false;
+  clickMarker.visible = false;
+  setAnimation(false);
+  showLoadingScreen(title, detail, targetWorld);
 }
 
 function setVisibleWorld(world) {
@@ -2478,43 +2676,57 @@ function exitInterior(exitId) {
   exitMcDonalds();
 }
 
-function exitMcDonalds() {
+async function exitMcDonalds() {
+  if (gameState.isLoading) return;
+  prepareWorldTransition('Returning outside', 'Loading outside map and street models...', 'outside');
+  await waitForWorldAssets('outside', TRANSITION_MINIMUM_MS);
+
   const location = locations.get('mcdonalds');
   gameState.world = 'outside';
   setVisibleWorld('outside');
   scene.background = new THREE.Color(0x8db6c7);
-  pendingInteraction = null;
-  isMoving = false;
-  clickMarker.visible = false;
   if (location) {
     hero.position.set(location.position.x + 2.8, 0, location.position.z + 2.6);
   }
   targetPosition.copy(hero.position);
   setStatus('Back outside');
+  hideLoadingScreen();
 }
 
-function exitLuminaraCafe() {
+async function exitLuminaraCafe() {
+  if (gameState.isLoading) return;
+  prepareWorldTransition('Returning outside', 'Loading outside map and street models...', 'outside');
+  await waitForWorldAssets('outside', TRANSITION_MINIMUM_MS);
+
   const location = locations.get('luminara_cafe');
   gameState.world = 'outside';
   setVisibleWorld('outside');
   scene.background = new THREE.Color(0x8db6c7);
-  pendingInteraction = null;
-  isMoving = false;
-  clickMarker.visible = false;
   if (location) {
     hero.position.set(location.position.x + 1.85, 0, location.position.z + 2.45);
   }
   targetPosition.copy(hero.position);
   setStatus('Back outside');
+  hideLoadingScreen();
 }
 
 function seedFeed() {
   const jessy = NPCS.find((npc) => npc.id === 'jessy');
   const luminara = NPCS.find((npc) => npc.id === 'luminara');
+  const sara = NPCS.find((npc) => npc.id === 'sara');
   const bigchog = NPCS.find((npc) => npc.id === 'bigchog');
   const quest = QUESTS.fries_for_jessy;
   addFeed({ authorId: jessy.id, text: quest.posts.start });
   addFeed({ authorId: luminara.id, text: QUESTS.coffee_beans_for_luminara.posts.start });
+  addFeed({
+    authorId: sara.id,
+    text: 'luminara corner seat secured. coffee shop aura is undefeated',
+    replies: 64,
+    reposts: 13,
+    likes: 420,
+    views: '9K',
+    bookmarks: 11,
+  });
   addFeed({
     authorId: bigchog.id,
     text: 'vibecoding arc is evolving',
@@ -2557,6 +2769,7 @@ function addFeed(post) {
   const npcStats = {
     jessy: { replies: 377, reposts: 80, likes: 762, views: '80K' },
     luminara: { replies: 42, reposts: 18, likes: 311, views: '12K' },
+    sara: { replies: 64, reposts: 13, likes: 420, views: '9K' },
     bigchog: { replies: 128, reposts: 42, likes: '1.4K', views: '22K' },
   };
   const fixedStats = npcStats[npc?.id] || {};
@@ -2774,6 +2987,7 @@ function setQuestMarkerLabel(sprite, text) {
 }
 
 function showDialog(name, text, options = {}) {
+  activeDialogRoot = currentInteractionRoot;
   dialogName.textContent = name;
   dialogText.textContent = text;
   dialogClose.textContent = options.primaryLabel || 'OK';
@@ -2789,14 +3003,28 @@ function showDialog(name, text, options = {}) {
   dialogPanel.hidden = false;
 }
 
+function closeDialog() {
+  dialogPanel.hidden = true;
+  activeDialogRoot = null;
+  clearDialogActions();
+}
+
 function clearDialogActions() {
   dialogPrimaryAction = null;
   dialogSecondaryAction = null;
 }
 
+function updateDialogDistance() {
+  if (!hero || dialogPanel.hidden || !activeDialogRoot) return;
+
+  const isTooFar = flatDistance(hero.position, activeDialogRoot.position) > DIALOG_CLOSE_DISTANCE;
+  if (!isInteractiveInCurrentWorld(activeDialogRoot) || isTooFar) closeDialog();
+}
+
 function tick() {
   const delta = Math.min(clock.getDelta(), 0.05);
   updateHero(delta);
+  updateDialogDistance();
   updateCamera(delta);
   updateInfiniteMap();
   updateMarker();
@@ -2808,7 +3036,7 @@ function tick() {
 }
 
 function updateHero(delta) {
-  if (!hero || !isMoving) {
+  if (!hero || gameState.isLoading || !isMoving) {
     setAnimation(false);
     return;
   }

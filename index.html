@@ -3,9 +3,21 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" href="/assets/checkmark.svg.png" />
     <title>ct world</title>
   </head>
   <body>
+    <div id="loadingScreen" class="loading-screen" role="status" aria-live="polite">
+      <div class="loading-panel">
+        <div class="loading-brand">ct world</div>
+        <div class="loading-title" id="loadingTitle">Loading world</div>
+        <div class="loading-detail" id="loadingDetail">Preparing models...</div>
+        <div class="loading-track" aria-hidden="true">
+          <div class="loading-bar" id="loadingBar"></div>
+        </div>
+        <div class="loading-count" id="loadingCount">Starting</div>
+      </div>
+    </div>
     <aside id="socialPanel" aria-label="Timeline">
       <header class="timeline-header">
         <div class="timeline-title">Home</div>
